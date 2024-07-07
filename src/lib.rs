@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Context as _;
 use burn::tensor::{backend::Backend, Tensor};
-use rand::prelude::SliceRandom;
+use rand::{prelude::SliceRandom, Rng};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -129,16 +129,18 @@ impl Trainer {
             while !is_done {
                 step += 1;
 
-                let action = if self.exploration / ((epi + 1) as f32).sqrt() > rand::random() {
+                let action = if self.exploration / ((epi + 1) as f32).sqrt()
+                    < rand::thread_rng().gen::<f32>()
+                {
+                    agent.policy(&observation)
+                } else {
                     let action_space = env.action_space();
                     match action_space {
                         ActionSpace::Discrete(n) => {
-                            let action = rand::random::<i64>().abs() % n;
+                            let action = rand::thread_rng().gen_range(0..*n);
                             Action::Discrete(action)
                         }
                     }
-                } else {
-                    agent.policy(&observation)
                 };
 
                 (observation, reward, is_done) = env.step(&action)?;
@@ -161,7 +163,7 @@ impl Trainer {
                 };
                 experiences.push_back(experience);
 
-                if experiences.len() >= self.buffer_size {
+                if experiences.len() > self.buffer_size {
                     let batch = experiences
                         .make_contiguous()
                         .choose_multiple(&mut rand::thread_rng(), self.batch_size)

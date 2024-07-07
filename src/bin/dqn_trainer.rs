@@ -6,7 +6,7 @@ use burn::{
     grad_clipping::GradientClippingConfig,
     lr_scheduler::constant::ConstantLr,
     module::Module,
-    nn::{Linear, LinearConfig, Relu},
+    nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig, Relu},
     optim::AdamConfig,
     tensor::{backend::Backend, Tensor},
 };
@@ -15,6 +15,7 @@ use burn_rl_example::{
     env::{Env, GymnasiumEnv},
     ActionSpace, Agent, Estimator, ObservationSpace, Trainer,
 };
+use chrono::Local;
 use clap::Parser;
 use pyo3::Python;
 
@@ -33,6 +34,10 @@ struct Args {
 pub struct DeepQNetworkModel<B: Backend> {
     linear1: Linear<B>,
     linear2: Linear<B>,
+    ln1: LayerNorm<B>,
+    linear3: Linear<B>,
+    ln2: LayerNorm<B>,
+    linear4: Linear<B>,
     activation: Relu,
 }
 
@@ -42,20 +47,20 @@ impl<B: Backend> DeepQNetworkModel<B> {
         observation_space: &ObservationSpace,
         action_space: &ActionSpace,
     ) -> Self {
-        let linear1 = LinearConfig::new(
-            observation_space.shape().iter().product::<i64>() as usize,
-            8,
-        )
-        .init(device);
-        let linear2 = match action_space {
-            ActionSpace::Discrete(n) => LinearConfig::new(8, *n as usize).init(device),
-        };
-        let activation = Relu::new();
-
         Self {
-            linear1,
-            linear2,
-            activation,
+            linear1: LinearConfig::new(
+                observation_space.shape().iter().product::<i64>() as usize,
+                8,
+            )
+            .init(device),
+            linear2: LinearConfig::new(8, 8).init(device),
+            ln1: LayerNormConfig::new(8).init(device),
+            linear3: LinearConfig::new(8, 8).init(device),
+            ln2: LayerNormConfig::new(8).init(device),
+            linear4: match action_space {
+                ActionSpace::Discrete(n) => LinearConfig::new(8, *n as usize).init(device),
+            },
+            activation: Relu::new(),
         }
     }
 }
@@ -64,7 +69,13 @@ impl<B: Backend> Estimator<B> for DeepQNetworkModel<B> {
     fn predict(&self, observation: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = observation;
         let x = self.activation.forward(self.linear1.forward(x));
-        self.linear2.forward(x)
+        let out = x.clone();
+        let x = self.activation.forward(self.linear2.forward(x)) + out;
+        let x = self.ln1.forward(x);
+        let out = x.clone();
+        let x = self.activation.forward(self.linear3.forward(x)) + out;
+        let x = self.ln2.forward(x);
+        self.linear4.forward(x)
     }
 }
 
@@ -84,7 +95,7 @@ fn main() -> anyhow::Result<()> {
         LibTorchDevice::Cpu
     };
 
-    let now = chrono::Local::now();
+    let now = Local::now();
     let artifacts_path = args.artifacts_path.clone();
     let artifacts_path = artifacts_path.join(&args.env_name);
 
@@ -110,13 +121,14 @@ fn main() -> anyhow::Result<()> {
             ConstantLr::new(0.001),
             env.action_space().clone(),
             device,
+            1000,
         );
 
         if let Some(restore_path) = &args.restore_path {
             agent.load(restore_path).with_context(|| "load agent")?;
         }
 
-        let trainer = Trainer::new(1000, 50000, 32, 0.99, 0.5, artifacts_path)?;
+        let trainer = Trainer::new(1000, 5000, 64, 0.99, 0.5, artifacts_path)?;
 
         trainer.train_loop(&mut agent, &mut env)?;
 

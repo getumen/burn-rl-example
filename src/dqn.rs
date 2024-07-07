@@ -25,10 +25,13 @@ pub struct DeepQNetworkAgent<
     S: LrScheduler<B>,
 > {
     model: M,
+    teacher_model: M,
     optimizer: OptimizerAdaptor<O, M, B>,
     lr_scheduler: S,
     action_space: ActionSpace,
     device: B::Device,
+    update_counter: usize,
+    teacher_update_freq: usize,
 }
 
 impl<
@@ -44,13 +47,18 @@ impl<
         lr_scheduler: S,
         action_space: ActionSpace,
         device: B::Device,
+        teacher_update_freq: usize,
     ) -> Self {
+        let teacher_model = model.clone().fork(&device);
         Self {
             model,
+            teacher_model,
             optimizer,
             lr_scheduler,
             action_space,
             device,
+            update_counter: 0,
+            teacher_update_freq,
         }
     }
 }
@@ -89,7 +97,7 @@ where
         experiences: &[Experience<DeepQNetworkState>],
     ) -> anyhow::Result<()> {
         let batcher = DeepQNetworkBathcer::new(
-            self.model.clone(),
+            self.teacher_model.clone().fork(&self.device),
             self.device.clone(),
             self.action_space.clone(),
         );
@@ -110,6 +118,11 @@ where
         let grads: <B as AutodiffBackend>::Gradients = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
         self.model = self.optimizer.step(self.lr_scheduler.step(), model, grads);
+
+        self.update_counter += 1;
+        if self.update_counter % self.teacher_update_freq == 0 {
+            self.teacher_model = self.model.clone().fork(&self.device);
+        }
 
         Ok(())
     }
@@ -288,9 +301,9 @@ where
             .predict(next_observation.clone().inner());
         let next_q_value = Tensor::from_inner(next_q_value).to_device(&self.device);
         let next_q_value = match self.action_space {
-            ActionSpace::Discrete(num_class) => next_q_value
-                .max_dim(1)
-                .repeat(1, num_class as usize),
+            ActionSpace::Discrete(num_class) => {
+                next_q_value.max_dim(1).repeat(1, num_class as usize)
+            }
         };
 
         DeepQNetworkBatch {
