@@ -96,19 +96,28 @@ where
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
     ) -> anyhow::Result<()> {
-        let batcher = DeepQNetworkBathcer::new(
-            self.teacher_model.clone().fork(&self.device),
-            self.device.clone(),
-            self.action_space.clone(),
-        );
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
         let q_value = model.predict(observation);
+        let next_q_value = self
+            .teacher_model
+            .valid()
+            .predict(item.next_observation.clone().inner());
+        let next_q_value: Tensor<B, 2> = Tensor::from_inner(next_q_value).to_device(&self.device);
+        let next_q_value = match self.action_space {
+            ActionSpace::Discrete(num_class) => {
+                next_q_value.max_dim(1).repeat(1, num_class as usize)
+            }
+        };
         let targets = q_value.clone().inner()
             * (item.action.ones_like().inner() - item.action.clone().inner())
-            + (item.next_q_value.clone().inner().mul_scalar(gamma) + item.reward.clone().inner())
+            + ((next_q_value.clone().inner()
+                * (item.done.ones_like().inner() - item.done.clone().inner()))
+            .mul_scalar(gamma)
+                + item.reward.clone().inner())
                 * item.action.clone().inner();
         let targets = Tensor::from_inner(targets);
         let loss =
@@ -213,38 +222,26 @@ pub struct DeepQNetworkState {
 impl State for DeepQNetworkState {}
 
 #[derive(Debug, Clone)]
-pub struct DeepQNetworkBathcer<B: AutodiffBackend, M: AutodiffModule<B>>
-where
-    M::InnerModule: Estimator<B::InnerBackend>,
-{
-    teacher_model: M,
+pub struct DeepQNetworkBathcer<B: AutodiffBackend> {
     device: B::Device,
     action_space: ActionSpace,
 }
 
-impl<B: AutodiffBackend, M: AutodiffModule<B>> DeepQNetworkBathcer<B, M>
-where
-    M::InnerModule: Estimator<B::InnerBackend>,
-{
-    pub fn new(teacher_model: M, device: B::Device, action_space: ActionSpace) -> Self {
+impl<B: AutodiffBackend> DeepQNetworkBathcer<B> {
+    pub fn new(device: B::Device, action_space: ActionSpace) -> Self {
         Self {
-            teacher_model,
             device,
             action_space,
         }
     }
 }
 
-impl<B: AutodiffBackend, M: AutodiffModule<B>>
-    Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatch<B>> for DeepQNetworkBathcer<B, M>
-where
-    M::InnerModule: Estimator<B::InnerBackend>,
+impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatch<B>>
+    for DeepQNetworkBathcer<B>
 {
-    fn batch(&self, items: Vec<Experience<DeepQNetworkState>>) -> DeepQNetworkBatch<B>
-    where
-        M::InnerModule: Estimator<B::InnerBackend>,
-    {
-        let (observation, next_observation, action, reward): (
+    fn batch(&self, items: Vec<Experience<DeepQNetworkState>>) -> DeepQNetworkBatch<B> {
+        let (observation, next_observation, action, reward, done): (
+            Vec<Tensor<B, 2>>,
             Vec<Tensor<B, 2>>,
             Vec<Tensor<B, 2>>,
             Vec<Tensor<B, 2>>,
@@ -277,16 +274,24 @@ where
                         )
                         .repeat(1, num_class as usize),
                     },
+                    match self.action_space {
+                        ActionSpace::Discrete(num_class) => Tensor::from_data(
+                            Data::new(vec![x.is_done as i32], Shape::new([1, 1])).convert(),
+                            &Default::default(),
+                        )
+                        .repeat(1, num_class as usize),
+                    },
                 )
             })
             .fold(
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-                |(mut a, mut b, mut c, mut d), (w, x, y, z)| {
-                    a.push(w);
-                    b.push(x);
-                    c.push(y);
-                    d.push(z);
-                    (a, b, c, d)
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |(mut a, mut b, mut c, mut d, mut e), (v, w, x, y, z)| {
+                    a.push(v);
+                    b.push(w);
+                    c.push(x);
+                    d.push(y);
+                    e.push(z);
+                    (a, b, c, d, e)
                 },
             );
 
@@ -294,24 +299,14 @@ where
         let next_observation = Tensor::cat(next_observation, 0).to_device(&self.device);
         let action = Tensor::cat(action, 0).to_device(&self.device);
         let reward = Tensor::cat(reward, 0).to_device(&self.device);
-
-        let next_q_value = self
-            .teacher_model
-            .valid()
-            .predict(next_observation.clone().inner());
-        let next_q_value = Tensor::from_inner(next_q_value).to_device(&self.device);
-        let next_q_value = match self.action_space {
-            ActionSpace::Discrete(num_class) => {
-                next_q_value.max_dim(1).repeat(1, num_class as usize)
-            }
-        };
+        let done = Tensor::cat(done, 0).to_device(&self.device);
 
         DeepQNetworkBatch {
             observation,
             reward,
             action,
             next_observation,
-            next_q_value,
+            done,
         }
     }
 }
@@ -322,5 +317,5 @@ pub struct DeepQNetworkBatch<B: AutodiffBackend> {
     pub reward: Tensor<B, 2>,
     pub action: Tensor<B, 2>,
     pub next_observation: Tensor<B, 2>,
-    pub next_q_value: Tensor<B, 2>,
+    pub done: Tensor<B, 2>,
 }

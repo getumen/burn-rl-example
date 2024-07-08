@@ -82,7 +82,9 @@ pub struct Trainer {
     buffer_size: usize,
     batch_size: usize,
     gamma: f32,
-    exploration: f32,
+    init_exploration: f32,
+    final_exploration: f32,
+    exploration_decay: f32,
     artifacts_dir: PathBuf,
 }
 
@@ -92,7 +94,9 @@ impl Trainer {
         buffer_size: usize,
         batch_size: usize,
         gamma: f32,
-        exploration: f32,
+        init_exploration: f32,
+        final_exploration: f32,
+        exploration_decay: f32,
         artifacts_dir: PathBuf,
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&artifacts_dir).with_context(|| "create artifact dir")?;
@@ -101,7 +105,9 @@ impl Trainer {
             buffer_size,
             batch_size,
             gamma,
-            exploration,
+            init_exploration,
+            final_exploration,
+            exploration_decay,
             artifacts_dir,
         })
     }
@@ -129,7 +135,8 @@ impl Trainer {
             while !is_done {
                 step += 1;
 
-                let action = if self.exploration / ((epi + 1) as f32).sqrt()
+                let action = if (self.init_exploration * self.exploration_decay.powf(epi as f32))
+                    .max(self.final_exploration)
                     < rand::thread_rng().gen::<f32>()
                 {
                     agent.policy(&observation)
@@ -163,13 +170,16 @@ impl Trainer {
                 };
                 experiences.push_back(experience);
 
-                if experiences.len() > self.buffer_size {
+                if experiences.len() > self.batch_size {
                     let batch = experiences
                         .make_contiguous()
                         .choose_multiple(&mut rand::thread_rng(), self.batch_size)
                         .cloned()
                         .collect::<Vec<_>>();
                     agent.update(self.gamma, &batch)?;
+                }
+
+                if experiences.len() > self.buffer_size {
                     experiences.pop_front();
                 }
 

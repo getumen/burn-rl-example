@@ -6,7 +6,7 @@ use burn::{
     grad_clipping::GradientClippingConfig,
     lr_scheduler::constant::ConstantLr,
     module::Module,
-    nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig, Relu},
+    nn::{Linear, LinearConfig, Relu},
     optim::AdamConfig,
     tensor::{backend::Backend, Tensor},
 };
@@ -34,10 +34,7 @@ struct Args {
 pub struct DeepQNetworkModel<B: Backend> {
     linear1: Linear<B>,
     linear2: Linear<B>,
-    ln1: LayerNorm<B>,
     linear3: Linear<B>,
-    ln2: LayerNorm<B>,
-    linear4: Linear<B>,
     activation: Relu,
 }
 
@@ -50,15 +47,12 @@ impl<B: Backend> DeepQNetworkModel<B> {
         Self {
             linear1: LinearConfig::new(
                 observation_space.shape().iter().product::<i64>() as usize,
-                8,
+                64,
             )
             .init(device),
-            linear2: LinearConfig::new(8, 8).init(device),
-            ln1: LayerNormConfig::new(8).init(device),
-            linear3: LinearConfig::new(8, 8).init(device),
-            ln2: LayerNormConfig::new(8).init(device),
-            linear4: match action_space {
-                ActionSpace::Discrete(n) => LinearConfig::new(8, *n as usize).init(device),
+            linear2: LinearConfig::new(64, 64).init(device),
+            linear3: match action_space {
+                ActionSpace::Discrete(n) => LinearConfig::new(64, *n as usize).init(device),
             },
             activation: Relu::new(),
         }
@@ -69,13 +63,8 @@ impl<B: Backend> Estimator<B> for DeepQNetworkModel<B> {
     fn predict(&self, observation: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = observation;
         let x = self.activation.forward(self.linear1.forward(x));
-        let out = x.clone();
-        let x = self.activation.forward(self.linear2.forward(x)) + out;
-        let x = self.ln1.forward(x);
-        let out = x.clone();
-        let x = self.activation.forward(self.linear3.forward(x)) + out;
-        let x = self.ln2.forward(x);
-        self.linear4.forward(x)
+        let x = self.activation.forward(self.linear2.forward(x));
+        self.linear3.forward(x)
     }
 }
 
@@ -128,7 +117,7 @@ fn main() -> anyhow::Result<()> {
             agent.load(restore_path).with_context(|| "load agent")?;
         }
 
-        let trainer = Trainer::new(1000, 5000, 64, 0.99, 0.5, artifacts_path)?;
+        let trainer = Trainer::new(10000, 50000, 64, 0.99, 1.0, 0.01, 0.95, artifacts_path)?;
 
         trainer.train_loop(&mut agent, &mut env)?;
 
