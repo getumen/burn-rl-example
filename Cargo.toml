@@ -18,3 +18,6 @@ rmp-serde = "1.3"
 clap = { version = "4.5", features = ["derive"] }
 tch = {version = "0.15", features = ["download-libtorch"]}
 chrono = "0.4"
+
+[dev-dependencies]
+claim = "0.5"

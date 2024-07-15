@@ -11,17 +11,56 @@
 -e file:.
 box2d-py==2.3.5
     # via gymnasium
+click==8.1.7
+    # via burn-rl-example
 cloudpickle==3.0.0
+    # via gym
     # via gymnasium
+contourpy==1.2.1
+    # via matplotlib
+cycler==0.12.1
+    # via matplotlib
 farama-notifications==0.0.4
     # via gymnasium
+fonttools==4.53.1
+    # via matplotlib
+gym==0.26.2
+    # via nes-py
+gym-notices==0.0.8
+    # via gym
+gym-super-mario-bros==7.4.0
+    # via burn-rl-example
 gymnasium==0.29.1
     # via burn-rl-example
+kiwisolver==1.4.5
+    # via matplotlib
+matplotlib==3.9.1
+    # via burn-rl-example
+nes-py==8.2.1
+    # via gym-super-mario-bros
 numpy==1.26.4
+    # via contourpy
+    # via gym
     # via gymnasium
+    # via matplotlib
+    # via nes-py
+packaging==24.1
+    # via matplotlib
+pillow==10.4.0
+    # via matplotlib
 pygame==2.6.0
     # via gymnasium
+pyglet==1.5.21
+    # via nes-py
+pyparsing==3.1.2
+    # via matplotlib
+python-dateutil==2.9.0.post0
+    # via matplotlib
+six==1.16.0
+    # via python-dateutil
 swig==4.2.1
     # via gymnasium
+tqdm==4.66.4
+    # via nes-py
 typing-extensions==4.12.2
     # via gymnasium

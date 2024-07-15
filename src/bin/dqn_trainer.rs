@@ -12,8 +12,12 @@ use burn::{
 };
 use burn_rl_example::{
     dqn::DeepQNetworkAgent,
-    env::{Env, GymnasiumEnv},
-    ActionSpace, Agent, Estimator, ObservationSpace, Trainer,
+    env::gymnasium::GymnasiumEnv,
+    trainer::{
+        prioritized::{PrioritizedReplayMemory, PrioritizedReplayTrainer},
+        uniform::{UniformReplayMemory, UniformReplayTrainer},
+    },
+    ActionSpace, Agent, Env as _, Estimator, ObservationSpace,
 };
 use chrono::Local;
 use clap::Parser;
@@ -28,13 +32,18 @@ struct Args {
     env_name: String,
     #[arg(short, long)]
     restore_path: Option<PathBuf>,
+    #[arg(short, long)]
+    prioritized: bool,
 }
 
 #[derive(Module, Debug)]
 pub struct DeepQNetworkModel<B: Backend> {
     linear1: Linear<B>,
     linear2: Linear<B>,
-    linear3: Linear<B>,
+    value_linear1: Linear<B>,
+    value_linear2: Linear<B>,
+    advantage_linear1: Linear<B>,
+    advantage_linear2: Linear<B>,
     activation: Relu,
 }
 
@@ -51,7 +60,10 @@ impl<B: Backend> DeepQNetworkModel<B> {
             )
             .init(device),
             linear2: LinearConfig::new(64, 64).init(device),
-            linear3: match action_space {
+            value_linear1: LinearConfig::new(64, 64).init(device),
+            value_linear2: LinearConfig::new(64, 1).init(device),
+            advantage_linear1: LinearConfig::new(64, 64).init(device),
+            advantage_linear2: match action_space {
                 ActionSpace::Discrete(n) => LinearConfig::new(64, *n as usize).init(device),
             },
             activation: Relu::new(),
@@ -64,7 +76,16 @@ impl<B: Backend> Estimator<B> for DeepQNetworkModel<B> {
         let x = observation;
         let x = self.activation.forward(self.linear1.forward(x));
         let x = self.activation.forward(self.linear2.forward(x));
-        self.linear3.forward(x)
+        let value = self
+            .activation
+            .forward(self.value_linear1.forward(x.clone()));
+        let value = self.value_linear2.forward(value);
+        let advantage = self
+            .activation
+            .forward(self.advantage_linear1.forward(x.clone()));
+        let advantage = self.advantage_linear2.forward(advantage);
+        let advantage = advantage.clone() - advantage.clone().mean_dim(1);
+        value + advantage
     }
 }
 
@@ -111,15 +132,28 @@ fn main() -> anyhow::Result<()> {
             env.action_space().clone(),
             device,
             1000,
+            true,
         );
 
         if let Some(restore_path) = &args.restore_path {
             agent.load(restore_path).with_context(|| "load agent")?;
         }
 
-        let trainer = Trainer::new(10000, 50000, 64, 0.99, 1.0, 0.01, 0.95, artifacts_path)?;
+        if args.prioritized {
+            let mut memory = PrioritizedReplayMemory::new(2usize.pow(14), 64, 0.6);
 
-        trainer.train_loop(&mut agent, &mut env)?;
+            let trainer =
+                PrioritizedReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.98, artifacts_path, true)?;
+
+            trainer.train_loop(&mut agent, &mut env, &mut memory)?;
+        } else {
+            let mut memory = UniformReplayMemory::new(2usize.pow(16), 64);
+
+            let trainer =
+                UniformReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.98, artifacts_path, true)?;
+
+            trainer.train_loop(&mut agent, &mut env, &mut memory)?;
+        }
 
         Ok(())
     })?;

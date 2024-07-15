@@ -1,20 +1,15 @@
 pub mod dqn;
 pub mod env;
+pub mod trainer;
 
-use std::{
-    collections::VecDeque,
-    fs::File,
-    io::Write as _,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
-use anyhow::Context as _;
 use burn::tensor::{backend::Backend, Tensor};
-use rand::{prelude::SliceRandom, Rng};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
-pub trait State: Default + Clone {}
+pub trait State: Clone {
+    fn new(observation: Vec<f32>) -> Self;
+}
 
 #[derive(Debug, Clone)]
 pub struct Experience<S: State> {
@@ -57,6 +52,14 @@ pub enum ObservationSpace {
     Box { shape: Vec<i64> },
 }
 
+pub trait Env {
+    fn action_space(&self) -> &ActionSpace;
+    fn observation_space(&self) -> &ObservationSpace;
+    fn reset(&mut self) -> anyhow::Result<Vec<f32>>;
+    fn step(&mut self, action: &Action) -> anyhow::Result<(Vec<f32>, f32, bool)>;
+    fn render(&self) -> anyhow::Result<()>;
+}
+
 impl ObservationSpace {
     pub fn shape(&self) -> &[i64] {
         match self {
@@ -77,116 +80,8 @@ pub trait Agent<S: State>: Clone + Send {
     fn load<P: AsRef<Path>>(&mut self, restore_dir: P) -> anyhow::Result<()>;
 }
 
-pub struct Trainer {
-    episode: usize,
-    buffer_size: usize,
-    batch_size: usize,
-    gamma: f32,
-    init_exploration: f32,
-    final_exploration: f32,
-    exploration_decay: f32,
-    artifacts_dir: PathBuf,
+pub trait PrioritizedReplay<S: State> {
+    fn temporaral_difference_error(&self, gamma: f32, experiences: &[Experience<S>]) -> Vec<f32>;
 }
 
-impl Trainer {
-    pub fn new(
-        episode: usize,
-        buffer_size: usize,
-        batch_size: usize,
-        gamma: f32,
-        init_exploration: f32,
-        final_exploration: f32,
-        exploration_decay: f32,
-        artifacts_dir: PathBuf,
-    ) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(&artifacts_dir).with_context(|| "create artifact dir")?;
-        Ok(Self {
-            episode,
-            buffer_size,
-            batch_size,
-            gamma,
-            init_exploration,
-            final_exploration,
-            exploration_decay,
-            artifacts_dir,
-        })
-    }
-
-    pub fn train_loop<S: State>(
-        &self,
-        agent: &mut impl Agent<S>,
-        env: &mut impl env::Env,
-    ) -> anyhow::Result<()> {
-        let mut experiences = VecDeque::new();
-        for epi in 0..self.episode {
-            let mut step = 0;
-            let mut cumulative_reward = 0.0;
-            let mut observation = env.reset()?;
-            let mut reward;
-            let mut is_done = false;
-            let mut state = S::default();
-            let episode_artifacts_dir = self.artifacts_dir.join(format!("{}", epi));
-            std::fs::create_dir_all(&episode_artifacts_dir).with_context(|| {
-                format!("create episode artifact dir {:?}", episode_artifacts_dir)
-            })?;
-            let train_log_path = episode_artifacts_dir.join("train.jsonl");
-            let mut train_logger =
-                File::create(&train_log_path).with_context(|| "create train log file")?;
-            while !is_done {
-                step += 1;
-
-                let action = if (self.init_exploration * self.exploration_decay.powf(epi as f32))
-                    .max(self.final_exploration)
-                    < rand::thread_rng().gen::<f32>()
-                {
-                    agent.policy(&observation)
-                } else {
-                    let action_space = env.action_space();
-                    match action_space {
-                        ActionSpace::Discrete(n) => {
-                            let action = rand::thread_rng().gen_range(0..*n);
-                            Action::Discrete(action)
-                        }
-                    }
-                };
-
-                (observation, reward, is_done) = env.step(&action)?;
-                let next_state = agent.make_state(&observation, &state);
-                cumulative_reward += reward;
-                let log = json!({
-                    "episode": epi,
-                    "step": step,
-                    "action": action,
-                    "reward": reward,
-                    "cumulative_reward": cumulative_reward
-                });
-                writeln!(&mut train_logger, "{}", log).with_context(|| "write train log")?;
-
-                let experience = Experience {
-                    state,
-                    action,
-                    reward,
-                    is_done,
-                };
-                experiences.push_back(experience);
-
-                if experiences.len() > self.batch_size {
-                    let batch = experiences
-                        .make_contiguous()
-                        .choose_multiple(&mut rand::thread_rng(), self.batch_size)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    agent.update(self.gamma, &batch)?;
-                }
-
-                if experiences.len() > self.buffer_size {
-                    experiences.pop_front();
-                }
-
-                state = next_state;
-            }
-            agent.save(&episode_artifacts_dir)?;
-        }
-        Ok(())
-    }
-}
+pub trait PrioritizedReplayAgent<S: State>: Agent<S> + PrioritizedReplay<S> {}

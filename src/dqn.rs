@@ -15,7 +15,10 @@ use burn::{
     tensor::{backend::AutodiffBackend, Data, ElementConversion, Shape, Tensor},
 };
 
-use crate::{Action, ActionSpace, Agent, Estimator, Experience, State};
+use crate::{
+    Action, ActionSpace, Agent, Estimator, Experience, PrioritizedReplay, PrioritizedReplayAgent,
+    State,
+};
 
 #[derive(Clone)]
 pub struct DeepQNetworkAgent<
@@ -32,6 +35,7 @@ pub struct DeepQNetworkAgent<
     device: B::Device,
     update_counter: usize,
     teacher_update_freq: usize,
+    double_dqn: bool,
 }
 
 impl<
@@ -48,6 +52,7 @@ impl<
         action_space: ActionSpace,
         device: B::Device,
         teacher_update_freq: usize,
+        double_dqn: bool,
     ) -> Self {
         let teacher_model = model.clone().fork(&device);
         Self {
@@ -59,7 +64,64 @@ impl<
             device,
             update_counter: 0,
             teacher_update_freq,
+            double_dqn,
         }
+    }
+}
+
+impl<B, M, O, S> PrioritizedReplay<DeepQNetworkState> for DeepQNetworkAgent<B, M, O, S>
+where
+    B: AutodiffBackend,
+    M: AutodiffModule<B> + Display + Estimator<B>,
+    M::InnerModule: Estimator<B::InnerBackend>,
+    O: SimpleOptimizer<B::InnerBackend>,
+    S: LrScheduler<B> + Clone,
+{
+    fn temporaral_difference_error(
+        &self,
+        gamma: f32,
+        experiences: &[Experience<DeepQNetworkState>],
+    ) -> Vec<f32> {
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+
+        let model = self.model.clone();
+        let item = batcher.batch(experiences.to_vec());
+        let observation = item.observation.clone();
+        let q_value = model.predict(observation);
+        let next_target_q_value = self
+            .teacher_model
+            .valid()
+            .predict(item.next_observation.clone().inner());
+        let next_target_q_value: Tensor<B, 2> =
+            Tensor::from_inner(next_target_q_value).to_device(&self.device);
+        let next_target_q_value = match self.action_space {
+            ActionSpace::Discrete(num_class) => {
+                if self.double_dqn {
+                    let next_q_value = model.predict(item.next_observation.clone());
+                    let next_actions = next_q_value.argmax(1);
+                    next_target_q_value
+                        .gather(1, next_actions)
+                        .repeat(1, num_class as usize)
+                } else {
+                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
+                }
+            }
+        };
+        let targets = q_value.clone().inner()
+            * (item.action.ones_like().inner() - item.action.clone().inner())
+            + ((next_target_q_value.clone().inner()
+                * (item.done.ones_like().inner() - item.done.clone().inner()))
+            .mul_scalar(gamma)
+                + item.reward.clone().inner())
+                * item.action.clone().inner();
+        let td: Vec<f32> = (q_value.inner() - targets)
+            .sum_dim(1)
+            .into_data()
+            .value
+            .iter()
+            .map(|x| x.elem())
+            .collect();
+        td
     }
 }
 
@@ -102,19 +164,28 @@ where
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
         let q_value = model.predict(observation);
-        let next_q_value = self
+        let next_target_q_value = self
             .teacher_model
             .valid()
             .predict(item.next_observation.clone().inner());
-        let next_q_value: Tensor<B, 2> = Tensor::from_inner(next_q_value).to_device(&self.device);
-        let next_q_value = match self.action_space {
+        let next_target_q_value: Tensor<B, 2> =
+            Tensor::from_inner(next_target_q_value).to_device(&self.device);
+        let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
-                next_q_value.max_dim(1).repeat(1, num_class as usize)
+                if self.double_dqn {
+                    let next_q_value = model.predict(item.next_observation.clone());
+                    let next_actions = next_q_value.argmax(1);
+                    next_target_q_value
+                        .gather(1, next_actions)
+                        .repeat(1, num_class as usize)
+                } else {
+                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
+                }
             }
         };
         let targets = q_value.clone().inner()
             * (item.action.ones_like().inner() - item.action.clone().inner())
-            + ((next_q_value.clone().inner()
+            + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
             .mul_scalar(gamma)
                 + item.reward.clone().inner())
@@ -213,13 +284,30 @@ where
     }
 }
 
+impl<B, M, O, S> PrioritizedReplayAgent<DeepQNetworkState> for DeepQNetworkAgent<B, M, O, S>
+where
+    B: AutodiffBackend,
+    M: AutodiffModule<B> + Display + Estimator<B>,
+    M::InnerModule: Estimator<B::InnerBackend>,
+    O: SimpleOptimizer<B::InnerBackend>,
+    S: LrScheduler<B> + Clone,
+{
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DeepQNetworkState {
     pub observation: Vec<f32>,
     pub next_observation: Vec<f32>,
 }
 
-impl State for DeepQNetworkState {}
+impl State for DeepQNetworkState {
+    fn new(observation: Vec<f32>) -> Self {
+        Self {
+            observation: Vec::new(),
+            next_observation: observation,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DeepQNetworkBathcer<B: AutodiffBackend> {
