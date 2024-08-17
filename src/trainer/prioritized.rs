@@ -4,7 +4,10 @@ use crate::{Action, ActionSpace, Env, Experience, PrioritizedReplayAgent, State}
 
 use anyhow::Context as _;
 use rand::Rng as _;
+use redb::{Builder, Database, TableDefinition};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
+use tempfile::NamedTempFile;
 
 pub struct PrioritizedReplayTrainer {
     episode: usize,
@@ -38,7 +41,7 @@ impl PrioritizedReplayTrainer {
         })
     }
 
-    pub fn train_loop<S: State>(
+    pub fn train_loop<S: State + Serialize + DeserializeOwned + 'static>(
         &self,
         agent: &mut impl PrioritizedReplayAgent<S>,
         env: &mut impl Env,
@@ -101,12 +104,19 @@ impl PrioritizedReplayTrainer {
 
                 let td_error = agent.temporaral_difference_error(self.gamma, &[experience.clone()]);
 
-                memory.push(td_error[0], experience);
+                if !td_error[0].is_nan() {
+                    memory.push(td_error[0], experience)?;
+                }
 
                 if epi > 0 {
-                    let (indexes, batch) = memory.sample();
-                    agent.update(self.gamma, &batch)?;
+                    let (indexes, batch, weights) = memory.sample()?;
+                    agent.update(self.gamma, &batch, &weights)?;
                     let td_errors = agent.temporaral_difference_error(self.gamma, &batch);
+                    let (indexes, td_errors) = indexes
+                        .into_iter()
+                        .zip(td_errors)
+                        .filter(|(_, x)| !x.is_nan())
+                        .unzip();
                     memory.update_priorities(indexes, td_errors);
                 }
             }
@@ -116,8 +126,9 @@ impl PrioritizedReplayTrainer {
     }
 }
 
-pub struct PrioritizedReplayMemory<S: State> {
-    buffer: Vec<Experience<S>>,
+pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
+    buffer: Database,
+    table_definition: TableDefinition<'static, u32, Experience<S>>,
     priorities: SumTree,
     max_buffer_size: usize,
     batch_size: usize,
@@ -125,16 +136,27 @@ pub struct PrioritizedReplayMemory<S: State> {
     alpha: f32,
 }
 
-impl<S: State> PrioritizedReplayMemory<S> {
-    pub fn new(max_buffer_size: usize, batch_size: usize, alpha: f32) -> Self {
-        Self {
-            buffer: Vec::new(),
+impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<S> {
+    pub fn new(max_buffer_size: usize, batch_size: usize, alpha: f32) -> anyhow::Result<Self> {
+        let file = NamedTempFile::new().with_context(|| "create temp file")?;
+        let db = Builder::new().create(file)?;
+        let table_definition: TableDefinition<u32, Experience<S>> =
+            TableDefinition::new("experience");
+
+        let wrote_txn = db.begin_write()?;
+        {
+            wrote_txn.open_table(table_definition)?;
+        }
+        wrote_txn.commit()?;
+        Ok(Self {
+            buffer: db,
+            table_definition,
             priorities: SumTree::new(max_buffer_size),
             max_buffer_size,
             batch_size,
             counter: 0,
             alpha,
-        }
+        })
     }
 
     pub fn update_priorities(&mut self, indexes: Vec<usize>, td_errors: Vec<f32>) {
@@ -144,29 +166,45 @@ impl<S: State> PrioritizedReplayMemory<S> {
         }
     }
 
-    fn push(&mut self, td_error: f32, experience: Experience<S>) {
-        let priority = (td_error.abs() + 0.001).powf(self.alpha);
-        if self.counter == self.max_buffer_size {
-            self.counter = 0;
+    fn push(&mut self, td_error: f32, experience: Experience<S>) -> anyhow::Result<()> {
+        let write_txn = self.buffer.begin_write()?;
+        {
+            let mut table = write_txn.open_table(self.table_definition)?;
+            let priority = (td_error + 0.001).powf(self.alpha);
+            if self.counter == self.max_buffer_size {
+                self.counter = 0;
+            }
+            table.insert(self.counter as u32, experience)?;
+            self.priorities.set(self.counter, priority);
+            self.counter += 1;
         }
-        if self.buffer.len() < self.max_buffer_size {
-            self.buffer.push(experience);
-        } else {
-            self.buffer[self.counter] = experience;
-        }
-        self.priorities.set(self.counter, priority);
-        self.counter += 1;
+        write_txn.commit()?;
+
+        Ok(())
     }
 
-    pub fn sample(&self) -> (Vec<usize>, Vec<Experience<S>>) {
-        let mut indexes = Vec::new();
+    pub fn sample(&self) -> anyhow::Result<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)> {
+        let read_txn = self.buffer.begin_read()?;
+        let table = read_txn.open_table(self.table_definition)?;
+        let mut indexes = Vec::with_capacity(self.batch_size);
         let mut experiences = Vec::with_capacity(self.batch_size);
-        for _ in 0..self.batch_size {
-            let index = self.priorities.sample();
+        let mut weights = Vec::with_capacity(self.batch_size);
+        let mut counter = 0;
+        while counter < self.batch_size {
+            let (index, weight) = self.priorities.sample();
+            let experience = if let Some(v) = table.get(index as u32).unwrap() {
+                v.value()
+            } else {
+                println!("invalid index: {}", index);
+                continue;
+            };
             indexes.push(index);
-            experiences.push(self.buffer[index].clone());
+            experiences.push(experience);
+            weights.push(weight);
+
+            counter += 1;
         }
-        (indexes, experiences)
+        Ok((indexes, experiences, weights))
     }
 }
 
@@ -188,6 +226,7 @@ impl SumTree {
         let mut parent = tree_index / 2;
         while parent > 0 {
             self.data[parent] = self.data[2 * parent] + self.data[2 * parent + 1];
+            assert!(!self.data[parent].is_nan());
             parent /= 2;
         }
     }
@@ -196,7 +235,7 @@ impl SumTree {
         self.data[1]
     }
 
-    pub fn sample(&self) -> usize {
+    pub fn sample(&self) -> (usize, f32) {
         let max: f32 = self.total();
         let mut value = rand::thread_rng().gen_range(0.0..max);
         let mut cur = 1;
@@ -210,7 +249,7 @@ impl SumTree {
                 cur = left;
             }
         }
-        cur - self.capacity
+        (cur - self.capacity, self.data[cur])
     }
 }
 
@@ -232,7 +271,8 @@ mod tests {
         assert_eq!(sum_tree.total(), 10.0);
         let mut count = [0; 4];
         for _ in 0..sample_num {
-            count[sum_tree.sample()] += 1;
+            let (index, _) = sum_tree.sample();
+            count[index] += 1;
         }
         for i in 0..4 {
             assert_lt!(

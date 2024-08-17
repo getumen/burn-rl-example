@@ -5,19 +5,17 @@ use burn::{
     backend::{libtorch::LibTorchDevice, Autodiff, LibTorch},
     grad_clipping::GradientClippingConfig,
     lr_scheduler::constant::ConstantLr,
-    module::Module,
-    nn::{Linear, LinearConfig, Relu},
     optim::AdamConfig,
-    tensor::{backend::Backend, Tensor},
 };
 use burn_rl_example::{
-    dqn::DeepQNetworkAgent,
+    agent::DeepQNetworkAgent,
     env::gymnasium::GymnasiumEnv,
+    model::DeepQNetworkModel,
     trainer::{
         prioritized::{PrioritizedReplayMemory, PrioritizedReplayTrainer},
         uniform::{UniformReplayMemory, UniformReplayTrainer},
     },
-    ActionSpace, Agent, Env as _, Estimator, ObservationSpace,
+    Agent, Env as _,
 };
 use chrono::Local;
 use clap::Parser;
@@ -34,59 +32,10 @@ struct Args {
     restore_path: Option<PathBuf>,
     #[arg(short, long)]
     prioritized: bool,
-}
-
-#[derive(Module, Debug)]
-pub struct DeepQNetworkModel<B: Backend> {
-    linear1: Linear<B>,
-    linear2: Linear<B>,
-    value_linear1: Linear<B>,
-    value_linear2: Linear<B>,
-    advantage_linear1: Linear<B>,
-    advantage_linear2: Linear<B>,
-    activation: Relu,
-}
-
-impl<B: Backend> DeepQNetworkModel<B> {
-    pub fn new(
-        device: &B::Device,
-        observation_space: &ObservationSpace,
-        action_space: &ActionSpace,
-    ) -> Self {
-        Self {
-            linear1: LinearConfig::new(
-                observation_space.shape().iter().product::<i64>() as usize,
-                64,
-            )
-            .init(device),
-            linear2: LinearConfig::new(64, 64).init(device),
-            value_linear1: LinearConfig::new(64, 64).init(device),
-            value_linear2: LinearConfig::new(64, 1).init(device),
-            advantage_linear1: LinearConfig::new(64, 64).init(device),
-            advantage_linear2: match action_space {
-                ActionSpace::Discrete(n) => LinearConfig::new(64, *n as usize).init(device),
-            },
-            activation: Relu::new(),
-        }
-    }
-}
-
-impl<B: Backend> Estimator<B> for DeepQNetworkModel<B> {
-    fn predict(&self, observation: Tensor<B, 2>) -> Tensor<B, 2> {
-        let x = observation;
-        let x = self.activation.forward(self.linear1.forward(x));
-        let x = self.activation.forward(self.linear2.forward(x));
-        let value = self
-            .activation
-            .forward(self.value_linear1.forward(x.clone()));
-        let value = self.value_linear2.forward(value);
-        let advantage = self
-            .activation
-            .forward(self.advantage_linear1.forward(x.clone()));
-        let advantage = self.advantage_linear2.forward(advantage);
-        let advantage = advantage.clone() - advantage.clone().mean_dim(1);
-        value + advantage
-    }
+    #[arg(short, long)]
+    dueling: bool,
+    #[arg(short, long)]
+    double_dqn: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -120,6 +69,7 @@ fn main() -> anyhow::Result<()> {
             &device,
             env.observation_space(),
             env.action_space(),
+            args.dueling,
         );
         let optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Value(1.0)))
@@ -132,7 +82,7 @@ fn main() -> anyhow::Result<()> {
             env.action_space().clone(),
             device,
             1000,
-            true,
+            args.double_dqn,
         );
 
         if let Some(restore_path) = &args.restore_path {
@@ -140,17 +90,17 @@ fn main() -> anyhow::Result<()> {
         }
 
         if args.prioritized {
-            let mut memory = PrioritizedReplayMemory::new(2usize.pow(14), 64, 0.6);
+            let mut memory = PrioritizedReplayMemory::new(2usize.pow(14), 64, 0.6)?;
 
             let trainer =
-                PrioritizedReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.98, artifacts_path, true)?;
+                PrioritizedReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.99, artifacts_path, true)?;
 
             trainer.train_loop(&mut agent, &mut env, &mut memory)?;
         } else {
-            let mut memory = UniformReplayMemory::new(2usize.pow(16), 64);
+            let mut memory = UniformReplayMemory::new(2usize.pow(16), 64)?;
 
             let trainer =
-                UniformReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.98, artifacts_path, true)?;
+                UniformReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.99, artifacts_path, true)?;
 
             trainer.train_loop(&mut agent, &mut env, &mut memory)?;
         }

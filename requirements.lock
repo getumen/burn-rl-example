@@ -7,6 +7,7 @@
 #   all-features: false
 #   with-sources: false
 #   generate-hashes: false
+#   universal: false
 
 -e file:.
 box2d-py==2.3.5
@@ -24,7 +25,8 @@ farama-notifications==0.0.4
     # via gymnasium
 fonttools==4.53.1
     # via matplotlib
-gym==0.26.2
+gym==0.23.1
+    # via burn-rl-example
     # via nes-py
 gym-notices==0.0.8
     # via gym

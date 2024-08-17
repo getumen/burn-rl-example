@@ -1,8 +1,11 @@
 use std::{fs::File, io::Write, path::PathBuf}; // Add the Write trait import
 
 use anyhow::Context as _;
-use rand::{seq::SliceRandom, Rng as _};
+use rand::Rng as _;
+use redb::{Builder, Database, ReadableTableMetadata, TableDefinition};
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
+use tempfile::NamedTempFile;
 
 use crate::{Action, ActionSpace, Agent, Env, Experience, State};
 
@@ -38,7 +41,7 @@ impl UniformReplayTrainer {
         })
     }
 
-    pub fn train_loop<S: State>(
+    pub fn train_loop<S: State + Serialize + DeserializeOwned + 'static>(
         &self,
         agent: &mut impl Agent<S>,
         env: &mut impl Env,
@@ -98,11 +101,12 @@ impl UniformReplayTrainer {
                     reward,
                     is_done,
                 };
-                memory.push(experience);
+                memory.push(experience)?;
 
                 if epi > 0 {
-                    let batch = memory.sample();
-                    agent.update(self.gamma, &batch)?;
+                    let batch = memory.sample()?;
+                    let weights = vec![1.0 / batch.len() as f32; batch.len()];
+                    agent.update(self.gamma, &batch, &weights)?;
                 }
             }
             agent.save(&episode_artifacts_dir)?;
@@ -111,40 +115,64 @@ impl UniformReplayTrainer {
     }
 }
 
-pub struct UniformReplayMemory<S: State> {
-    buffer: Vec<Experience<S>>,
+pub struct UniformReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
+    buffer: Database,
+    table_definition: TableDefinition<'static, u32, Experience<S>>,
     max_buffer_size: usize,
     batch_size: usize,
     counter: usize,
 }
 
-impl<S: State> UniformReplayMemory<S> {
-    pub fn new(max_buffer_size: usize, batch_size: usize) -> Self {
-        Self {
-            buffer: Vec::new(),
+impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
+    pub fn new(max_buffer_size: usize, batch_size: usize) -> anyhow::Result<Self> {
+        let file = NamedTempFile::new().with_context(|| "create temp file")?;
+        let db = Builder::new().create(file)?;
+        let table_definition: TableDefinition<u32, Experience<S>> =
+            TableDefinition::new("experience");
+        let wrote_txn = db.begin_write()?;
+        {
+            wrote_txn.open_table(table_definition)?;
+        }
+        wrote_txn.commit()?;
+        Ok(Self {
+            buffer: db,
+            table_definition,
             max_buffer_size,
             batch_size,
             counter: 0,
-        }
+        })
     }
 
-    fn push(&mut self, experience: Experience<S>) {
-        if self.buffer.len() < self.max_buffer_size {
-            self.buffer.push(experience);
-            self.counter += 1;
-        } else {
-            self.buffer[self.counter] = experience;
-            self.counter += 1;
+    fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
+        let write_txn = self.buffer.begin_write()?;
+        {
+            let mut table = write_txn.open_table(self.table_definition)?;
+            table.insert(self.counter as u32, experience)?;
             if self.counter == self.max_buffer_size {
                 self.counter = 0;
             }
         }
+        write_txn.commit()?;
+        self.counter += 1;
+
+        Ok(())
     }
 
-    fn sample(&self) -> Vec<Experience<S>> {
-        self.buffer
-            .choose_multiple(&mut rand::thread_rng(), self.batch_size)
-            .cloned()
-            .collect()
+    fn sample(&self) -> anyhow::Result<Vec<Experience<S>>> {
+        let mut batch = Vec::new();
+
+        let read_txn = self.buffer.begin_read().unwrap();
+        {
+            let table = read_txn.open_table(self.table_definition).unwrap();
+            let len = table.len()?;
+            let indexes = (0..self.batch_size)
+                .map(|_| rand::thread_rng().gen_range(0..len))
+                .collect::<Vec<_>>();
+            for index in indexes {
+                let experience = table.get(index as u32)?;
+                batch.push(experience.unwrap().value());
+            }
+        }
+        Ok(batch)
     }
 }
