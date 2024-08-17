@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod batch;
 pub mod env;
+pub mod layers;
 pub mod model;
 pub mod trainer;
 
@@ -80,21 +81,21 @@ pub enum Action {
     Discrete(i64),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ObservationSpace {
-    Box { shape: Vec<i64> },
+#[derive(Debug, Clone, PartialEq)]
+pub enum ObservationSpace<const D: usize> {
+    Box { shape: [usize; D] },
 }
 
-pub trait Env {
+pub trait Env<const D: usize> {
     fn action_space(&self) -> &ActionSpace;
-    fn observation_space(&self) -> &ObservationSpace;
+    fn observation_space(&self) -> &ObservationSpace<D>;
     fn reset(&mut self) -> anyhow::Result<Vec<f32>>;
     fn step(&mut self, action: &Action) -> anyhow::Result<(Vec<f32>, f32, bool)>;
     fn render(&self) -> anyhow::Result<()>;
 }
 
-impl ObservationSpace {
-    pub fn shape(&self) -> &[i64] {
+impl<const D: usize> ObservationSpace<D> {
+    pub fn shape(&self) -> &[usize; D] {
         match self {
             ObservationSpace::Box { shape, .. } => shape,
         }
@@ -102,7 +103,7 @@ impl ObservationSpace {
 }
 
 pub trait Estimator<B: Backend> {
-    fn predict(&self, observation: Tensor<B, 2>) -> Tensor<B, 2>;
+    fn predict<const D: usize>(&self, observation: Tensor<B, D>) -> Tensor<B, 2>;
 }
 
 pub trait Agent<S: State>: Clone + Send {

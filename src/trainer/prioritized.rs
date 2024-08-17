@@ -1,6 +1,6 @@
 use std::{fs::File, io::Write as _, path::PathBuf};
 
-use crate::{Action, ActionSpace, Env, Experience, PrioritizedReplayAgent, State};
+use crate::{Env, Experience, PrioritizedReplayAgent, State};
 
 use anyhow::Context as _;
 use rand::Rng as _;
@@ -12,9 +12,6 @@ use tempfile::NamedTempFile;
 pub struct PrioritizedReplayTrainer {
     episode: usize,
     gamma: f32,
-    init_exploration: f32,
-    final_exploration: f32,
-    exploration_decay: f32,
     artifacts_dir: PathBuf,
     render: bool,
 }
@@ -23,9 +20,6 @@ impl PrioritizedReplayTrainer {
     pub fn new(
         episode: usize,
         gamma: f32,
-        init_exploration: f32,
-        final_exploration: f32,
-        exploration_decay: f32,
         artifacts_dir: PathBuf,
         render: bool,
     ) -> anyhow::Result<Self> {
@@ -33,18 +27,15 @@ impl PrioritizedReplayTrainer {
         Ok(Self {
             episode,
             gamma,
-            init_exploration,
-            final_exploration,
-            exploration_decay,
             artifacts_dir,
             render,
         })
     }
 
-    pub fn train_loop<S: State + Serialize + DeserializeOwned + 'static>(
+    pub fn train_loop<S: State + Serialize + DeserializeOwned + 'static, const D: usize>(
         &self,
         agent: &mut impl PrioritizedReplayAgent<S>,
-        env: &mut impl Env,
+        env: &mut impl Env<D>,
         memory: &mut PrioritizedReplayMemory<S>,
     ) -> anyhow::Result<()> {
         for epi in 0..self.episode {
@@ -68,20 +59,7 @@ impl PrioritizedReplayTrainer {
                     env.render()?;
                 }
 
-                let action = if (self.init_exploration * self.exploration_decay.powf(epi as f32))
-                    .max(self.final_exploration)
-                    < rand::thread_rng().gen::<f32>()
-                {
-                    agent.policy(&observation)
-                } else {
-                    let action_space = env.action_space();
-                    match action_space {
-                        ActionSpace::Discrete(n) => {
-                            let action = rand::thread_rng().gen_range(0..*n);
-                            Action::Discrete(action)
-                        }
-                    }
-                };
+                let action = agent.policy(&observation);
 
                 (observation, reward, is_done) = env.step(&action)?;
                 state = agent.make_state(&observation, &state);
@@ -102,11 +80,7 @@ impl PrioritizedReplayTrainer {
                     is_done,
                 };
 
-                let td_error = agent.temporaral_difference_error(self.gamma, &[experience.clone()]);
-
-                if !td_error[0].is_nan() {
-                    memory.push(td_error[0], experience)?;
-                }
+                memory.push(experience)?;
 
                 if epi > 0 {
                     let (indexes, batch, weights) = memory.sample()?;
@@ -134,6 +108,8 @@ pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'st
     batch_size: usize,
     counter: usize,
     alpha: f32,
+
+    max_priority: f32,
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<S> {
@@ -156,21 +132,24 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
             batch_size,
             counter: 0,
             alpha,
+
+            max_priority: 1.0,
         })
     }
 
     pub fn update_priorities(&mut self, indexes: Vec<usize>, td_errors: Vec<f32>) {
         for (index, td_error) in indexes.iter().zip(td_errors) {
-            let priority = (td_error.abs() + 0.001).powf(self.alpha);
+            self.max_priority = self.max_priority.max(td_error);
+            let priority = (td_error + 0.001).powf(self.alpha);
             self.priorities.set(*index, priority);
         }
     }
 
-    fn push(&mut self, td_error: f32, experience: Experience<S>) -> anyhow::Result<()> {
+    fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
         let write_txn = self.buffer.begin_write()?;
         {
             let mut table = write_txn.open_table(self.table_definition)?;
-            let priority = (td_error + 0.001).powf(self.alpha);
+            let priority = (self.max_priority + 0.001).powf(self.alpha);
             if self.counter == self.max_buffer_size {
                 self.counter = 0;
             }

@@ -10,7 +10,7 @@ pub struct GymnasiumEnv<'py> {
     py: Python<'py>,
     env: Bound<'py, PyAny>,
     action_space: ActionSpace,
-    observation_space: ObservationSpace,
+    observation_space: ObservationSpace<2>,
 }
 
 impl<'py> GymnasiumEnv<'py> {
@@ -43,6 +43,7 @@ impl<'py> GymnasiumEnv<'py> {
             "Box" => {
                 let shape = observation_space.getattr("shape")?;
                 let shape: Vec<i64> = shape.extract()?;
+                let shape = [1, shape[0] as usize];
                 ObservationSpace::Box { shape }
             }
             _ => unimplemented!("Unsupported observation space"),
@@ -62,12 +63,12 @@ impl<'py> GymnasiumEnv<'py> {
     }
 }
 
-impl<'py> Env for GymnasiumEnv<'py> {
+impl<'py> Env<2> for GymnasiumEnv<'py> {
     fn action_space(&self) -> &ActionSpace {
         &self.action_space
     }
 
-    fn observation_space(&self) -> &ObservationSpace {
+    fn observation_space(&self) -> &ObservationSpace<2> {
         &self.observation_space
     }
 
@@ -112,17 +113,17 @@ mod tests {
             (
                 "Acrobot-v1",
                 ActionSpace::Discrete(3),
-                ObservationSpace::Box { shape: vec![6] },
+                ObservationSpace::Box { shape: [1, 6] },
             ),
             (
                 "CartPole-v1",
                 ActionSpace::Discrete(2),
-                ObservationSpace::Box { shape: vec![4] },
+                ObservationSpace::Box { shape: [1, 4] },
             ),
             (
                 "MountainCar-v0",
                 ActionSpace::Discrete(3),
-                ObservationSpace::Box { shape: vec![2] },
+                ObservationSpace::Box { shape: [1, 2] },
             ),
         ] {
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
@@ -130,15 +131,9 @@ mod tests {
                 assert_eq!(env.action_space(), &action_space);
                 assert_eq!(env.observation_space(), &observation_space);
                 let observation = env.reset()?;
-                assert_eq!(
-                    observation.len(),
-                    observation_space.shape().iter().product::<i64>() as usize
-                );
+                assert_eq!(observation.len(), observation_space.shape()[1]);
                 let (observation, reward, _is_done) = env.step(&Action::Discrete(0))?;
-                assert_eq!(
-                    observation.len(),
-                    observation_space.shape().iter().product::<i64>() as usize
-                );
+                assert_eq!(observation.len(), observation_space.shape()[1]);
                 // check that experience is printed
                 // because pyo3 failed silently
                 println!("{}", reward);

@@ -41,10 +41,10 @@ impl UniformReplayTrainer {
         })
     }
 
-    pub fn train_loop<S: State + Serialize + DeserializeOwned + 'static>(
+    pub fn train_loop<S: State + Serialize + DeserializeOwned + 'static, const D: usize>(
         &self,
         agent: &mut impl Agent<S>,
-        env: &mut impl Env,
+        env: &mut impl Env<D>,
         memory: &mut UniformReplayMemory<S>,
     ) -> anyhow::Result<()> {
         for epi in 0..self.episode {
