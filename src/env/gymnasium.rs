@@ -15,6 +15,11 @@ pub struct GymnasiumEnv<'py> {
 
 impl<'py> GymnasiumEnv<'py> {
     pub fn new(py: Python<'py>, env_name: &str) -> anyhow::Result<Self> {
+        let sys = py.import_bound("sys")?;
+        let path = sys.getattr("path")?;
+        path.call_method1("append", (".venv/lib/python3.12/site-packages",))
+            .with_context(|| "fail to append path. use rye sync")?;
+
         let gym = py.import_bound("gymnasium")?;
         let make_func = gym.getattr("make")?;
         let kwargs = [("render_mode", "human")].into_py_dict_bound(py);

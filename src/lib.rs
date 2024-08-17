@@ -1,17 +1,20 @@
-pub mod dqn;
+pub mod agent;
+pub mod batch;
 pub mod env;
+pub mod model;
 pub mod trainer;
 
-use std::path::Path;
+use std::{fmt::Debug, path::Path};
 
 use burn::tensor::{backend::Backend, Tensor};
-use serde::{Deserialize, Serialize};
+use redb::TypeName;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
-pub trait State: Clone {
+pub trait State: Clone + Debug + Send {
     fn new(observation: Vec<f32>) -> Self;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Experience<S: State> {
     state: S,
     action: Action,
@@ -34,6 +37,36 @@ impl<S: State> Experience<S> {
 
     pub fn is_done(&self) -> bool {
         self.is_done
+    }
+}
+
+impl<S: State + Serialize + DeserializeOwned + Debug + 'static> redb::Value for Experience<S> {
+    type SelfType<'a> = Experience<S>;
+    type AsBytes<'a> = Vec<u8>;
+
+    fn fixed_width() -> Option<usize> {
+        None
+    }
+
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        let data = zstd::stream::decode_all(data).unwrap();
+        rmp_serde::from_slice(data.as_slice()).unwrap()
+    }
+
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        let data = rmp_serde::to_vec(value).unwrap();
+        zstd::stream::encode_all(data.as_slice(), 3).unwrap()
+    }
+
+    fn type_name() -> TypeName {
+        TypeName::new("Experience")
     }
 }
 
@@ -74,7 +107,12 @@ pub trait Estimator<B: Backend> {
 
 pub trait Agent<S: State>: Clone + Send {
     fn policy(&self, observation: &[f32]) -> Action;
-    fn update(&mut self, gamma: f32, experiences: &[Experience<S>]) -> anyhow::Result<()>;
+    fn update(
+        &mut self,
+        gamma: f32,
+        experiences: &[Experience<S>],
+        weights: &[f32],
+    ) -> anyhow::Result<()>;
     fn make_state(&self, next_observation: &[f32], state: &S) -> S;
     fn save<P: AsRef<Path>>(&self, artifacts_dir: P) -> anyhow::Result<()>;
     fn load<P: AsRef<Path>>(&mut self, restore_dir: P) -> anyhow::Result<()>;
@@ -85,3 +123,18 @@ pub trait PrioritizedReplay<S: State> {
 }
 
 pub trait PrioritizedReplayAgent<S: State>: Agent<S> + PrioritizedReplay<S> {}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeepQNetworkState {
+    pub observation: Vec<f32>,
+    pub next_observation: Vec<f32>,
+}
+
+impl State for DeepQNetworkState {
+    fn new(observation: Vec<f32>) -> Self {
+        Self {
+            observation: Vec::new(),
+            next_observation: observation,
+        }
+    }
+}
