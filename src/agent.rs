@@ -16,7 +16,8 @@ use burn::{
 };
 
 use crate::{
-    batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent
+    batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Estimator,
+    Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
 
 #[derive(Clone)]
@@ -41,8 +42,7 @@ pub struct DeepQNetworkAgent<
 
 impl<
         B: AutodiffBackend,
-    const D: usize,
-
+        const D: usize,
         M: AutodiffModule<B> + Estimator<B>,
         O: SimpleOptimizer<B::InnerBackend>,
         S: LrScheduler<B>,
@@ -74,7 +74,8 @@ impl<
     }
 }
 
-impl<B, const D: usize, M, O, S> PrioritizedReplay<DeepQNetworkState> for DeepQNetworkAgent<B,D, M, O, S>
+impl<B, const D: usize, M, O, S> PrioritizedReplay<DeepQNetworkState>
+    for DeepQNetworkAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B>,
@@ -131,7 +132,7 @@ where
     }
 }
 
-impl<B, const D:usize, M, O, S> Agent<DeepQNetworkState> for DeepQNetworkAgent<B, D, M, O, S>
+impl<B, const D: usize, M, O, S> Agent<DeepQNetworkState> for DeepQNetworkAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B>,
@@ -147,8 +148,7 @@ where
         );
         let scores = self.model.valid().predict(feature);
         println!(
-            "feature: {:?} score: {:?}",
-            observation,
+            "score: {:?}",
             scores.to_data().value
         );
         match self.action_space {
@@ -185,7 +185,8 @@ where
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
-                    let next_q_value = model.predict(item.next_observation.clone().reshape(shape.clone()));
+                    let next_q_value =
+                        model.predict(item.next_observation.clone().reshape(shape.clone()));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
@@ -301,7 +302,8 @@ where
     }
 }
 
-impl<B, const D:usize, M, O, S> PrioritizedReplayAgent<DeepQNetworkState> for DeepQNetworkAgent<B,D, M, O, S>
+impl<B, const D: usize, M, O, S> PrioritizedReplayAgent<DeepQNetworkState>
+    for DeepQNetworkAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B>,

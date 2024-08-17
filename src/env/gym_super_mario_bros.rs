@@ -48,7 +48,7 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
             "Box" => {
                 let shape = observation_space.getattr("shape")?;
                 let shape: Vec<i64> = shape.extract()?;
-                let shape = [1, shape[0] as usize, shape[1] as usize, shape[2] as usize];
+                let shape = [1, shape[2] as usize, shape[0] as usize, shape[1] as usize];
                 ObservationSpace::Box { shape }
             }
             _ => unimplemented!("Unsupported observation space"),
@@ -62,9 +62,10 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
     }
 
     fn ndarray_to_vec(array: Bound<PyAny>) -> anyhow::Result<Vec<f32>> {
-        let result = array.call_method("reshape", (-1,), None)?;
-        let result = result.extract()?;
-        Ok(result)
+        let array = array.call_method("transpose", (1, 2, 0), None)?;
+        let array = array.call_method("reshape", (-1,), None)?;
+        let array = array.extract()?;
+        Ok(array)
     }
 }
 
@@ -109,7 +110,7 @@ mod tests {
             "SuperMarioBros-v3",
             ActionSpace::Discrete(12),
             ObservationSpace::Box {
-                shape: [1, 240, 256, 3],
+                shape: [1, 3, 240, 256],
             },
         )] {
             let _result: anyhow::Result<()> = Python::with_gil(|py| {

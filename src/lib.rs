@@ -94,7 +94,7 @@ pub trait Env<const D: usize> {
     fn render(&self) -> anyhow::Result<()>;
 }
 
-impl <const D: usize> ObservationSpace<D> {
+impl<const D: usize> ObservationSpace<D> {
     pub fn shape(&self) -> &[usize; D] {
         match self {
             ObservationSpace::Box { shape, .. } => shape,

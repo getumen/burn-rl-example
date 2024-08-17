@@ -25,7 +25,6 @@ pub struct NoisyLinear<B: Backend> {
     pub weight_sigma: Param<Tensor<B, 2>>,
     pub bias_mu: Option<Param<Tensor<B, 1>>>,
     pub bias_sigma: Option<Param<Tensor<B, 1>>>,
-    
 }
 
 impl NoisyLinearConfig {
@@ -35,7 +34,8 @@ impl NoisyLinearConfig {
             value: 0.5 / (self.d_input as f64).sqrt(),
         };
         let weight_mu =
-            self.mu_initializer.init_with(shape, Some(self.d_input), Some(self.d_output), device);
+            self.mu_initializer
+                .init_with(shape, Some(self.d_input), Some(self.d_output), device);
         let weight_sigma =
             sigma_initializer.init_with(shape, Some(self.d_input), Some(self.d_output), device);
         let bias_mu = if self.bias {

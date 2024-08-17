@@ -131,15 +131,9 @@ mod tests {
                 assert_eq!(env.action_space(), &action_space);
                 assert_eq!(env.observation_space(), &observation_space);
                 let observation = env.reset()?;
-                assert_eq!(
-                    observation.len(),
-                    observation_space.shape()[1]
-                );
+                assert_eq!(observation.len(), observation_space.shape()[1]);
                 let (observation, reward, _is_done) = env.step(&Action::Discrete(0))?;
-                assert_eq!(
-                    observation.len(),
-                    observation_space.shape()[1]
-                );
+                assert_eq!(observation.len(), observation_space.shape()[1]);
                 // check that experience is printed
                 // because pyo3 failed silently
                 println!("{}", reward);

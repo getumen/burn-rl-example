@@ -3,7 +3,13 @@ use crate::{
     ActionSpace, Estimator, ObservationSpace,
 };
 use burn::{
-    module::Module, nn::{conv::{Conv2d, Conv2dConfig}, Linear, LinearConfig, Relu}, prelude::Backend, tensor::Tensor
+    module::Module,
+    nn::{
+        conv::{Conv2d, Conv2dConfig},
+        Linear, LinearConfig, Relu,
+    },
+    prelude::Backend,
+    tensor::Tensor,
 };
 
 #[derive(Module, Debug)]
@@ -153,33 +159,60 @@ impl<B: Backend> DeepQNetworkModel<B> {
         dueling: bool,
         noisy: bool,
     ) -> Self {
-        let value_layer = if dueling {
-            ValueLayer::Dueling(DuelingLayer::new(device, 64, action_space, noisy))
+       let value_layer_input_dim = if D==2 { 64} 
+       else if D == 4 {
+            let shape = observation_space.shape();
+            let shape = [shape[1], shape[2], shape[3]];
+            let stride = 3;
+            let kernel_size = 5;
+            let shape = [
+                16,
+                (shape[1] - kernel_size) / stride + 1,
+                (shape[2] - kernel_size) / stride + 1,
+            ];
+            let shape = [
+                32,
+                (shape[1] - kernel_size) / stride + 1,
+                (shape[2] - kernel_size) / stride + 1,
+            ];
+            shape.iter().product()
+       }else {
+              unimplemented!()
+       };
+        let layer1 = if D == 2 {
+            FeatureExtractionLayer::Linear(
+                LinearConfig::new(observation_space.shape()[1], 64).init(device),
+            )
+        } else if D == 4 {
+            FeatureExtractionLayer::Conv2d(
+                Conv2dConfig::new([3, 16], [5, 5])
+                    .with_stride([3, 3])
+                    .init(device),
+            )
         } else {
-            ValueLayer::Linear(LinearValueLayer::new(device, 64, action_space, noisy))
+            unimplemented!()
+        };
+
+        let layer2 = if D == 2 {
+            FeatureExtractionLayer::Linear(LinearConfig::new(64, 64).init(device))
+        } else if D == 4 {
+            FeatureExtractionLayer::Conv2d(
+                Conv2dConfig::new([16, 32], [5, 5])
+                    .with_stride([3, 3])
+                    .init(device),
+            )
+        } else {
+            unimplemented!()
+        };
+
+        let value_layer = if dueling {
+            ValueLayer::Dueling(DuelingLayer::new(device, value_layer_input_dim, action_space, noisy))
+        } else {
+            ValueLayer::Linear(LinearValueLayer::new(device, value_layer_input_dim, action_space, noisy))
         };
         Self {
-            layer1: if D == 2 {
-                FeatureExtractionLayer::Linear(LinearConfig::new(
-                    observation_space.shape()[1],
-                    64,
-                )
-                .init(device))
-            } else if D == 4 {
-                FeatureExtractionLayer::Conv2d(Conv2dConfig::new([3, 16], [5, 5]).with_stride([2, 2])
-                .init(device))
-            } else {
-                unimplemented!()
-
-            },
-            layer2: if D==2 {
-                FeatureExtractionLayer::Linear(LinearConfig::new(64, 64).init(device))
-            } else if D==4 {
-                FeatureExtractionLayer::Conv2d(Conv2dConfig::new([16, 32], [5, 5]).with_stride([2, 2])
-                .init(device))
-            } else {
-                unimplemented!()
-            },
+            layer1,
+            layer2,
             value_layer,
             activation: Relu::new(),
         }
@@ -192,14 +225,21 @@ impl<B: Backend> Estimator<B> for DeepQNetworkModel<B> {
         let x = match (&self.layer1, &self.layer2) {
             (FeatureExtractionLayer::Linear(layer1), FeatureExtractionLayer::Linear(layer2)) => {
                 let shape = x.shape().dims;
-                self.activation.forward(layer2.forward(self.activation.forward(layer1.forward(x.reshape([shape[0], shape[1]])))))
-            },
+                self.activation.forward(
+                    layer2.forward(
+                        self.activation
+                            .forward(layer1.forward(x.reshape([shape[0], shape[1]]))),
+                    ),
+                )
+            }
             (FeatureExtractionLayer::Conv2d(layer1), FeatureExtractionLayer::Conv2d(layer2)) => {
                 let shape = x.shape().dims;
-                let x = self.activation.forward(layer1.forward(x.reshape([shape[0], shape[1], shape[2], shape[3]])));
+                let x = self
+                    .activation
+                    .forward(layer1.forward(x.reshape([shape[0], shape[1], shape[2], shape[3]])));
                 let x = self.activation.forward(layer2.forward(x));
-                x.flatten(0, 1)
-            },
+                x.flatten(1, 3)
+            }
             _ => unimplemented!(),
         };
         match &self.value_layer {
