@@ -159,8 +159,9 @@ impl<B: Backend> DeepQNetworkModel<B> {
         dueling: bool,
         noisy: bool,
     ) -> Self {
-       let value_layer_input_dim = if D==2 { 64} 
-       else if D == 4 {
+        let value_layer_input_dim = if D == 2 {
+            64
+        } else if D == 4 {
             let shape = observation_space.shape();
             let shape = [shape[1], shape[2], shape[3]];
             let stride = 3;
@@ -176,9 +177,9 @@ impl<B: Backend> DeepQNetworkModel<B> {
                 (shape[2] - kernel_size) / stride + 1,
             ];
             shape.iter().product()
-       }else {
-              unimplemented!()
-       };
+        } else {
+            unimplemented!()
+        };
         let layer1 = if D == 2 {
             FeatureExtractionLayer::Linear(
                 LinearConfig::new(observation_space.shape()[1], 64).init(device),
@@ -206,9 +207,19 @@ impl<B: Backend> DeepQNetworkModel<B> {
         };
 
         let value_layer = if dueling {
-            ValueLayer::Dueling(DuelingLayer::new(device, value_layer_input_dim, action_space, noisy))
+            ValueLayer::Dueling(DuelingLayer::new(
+                device,
+                value_layer_input_dim,
+                action_space,
+                noisy,
+            ))
         } else {
-            ValueLayer::Linear(LinearValueLayer::new(device, value_layer_input_dim, action_space, noisy))
+            ValueLayer::Linear(LinearValueLayer::new(
+                device,
+                value_layer_input_dim,
+                action_space,
+                noisy,
+            ))
         };
         Self {
             layer1,
