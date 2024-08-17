@@ -10,7 +10,7 @@ pub struct GymSuperMarioBrosEnv<'py> {
     py: Python<'py>,
     env: Bound<'py, PyAny>,
     action_space: ActionSpace,
-    observation_space: ObservationSpace,
+    observation_space: ObservationSpace<4>,
 }
 
 impl<'py> GymSuperMarioBrosEnv<'py> {
@@ -48,6 +48,7 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
             "Box" => {
                 let shape = observation_space.getattr("shape")?;
                 let shape: Vec<i64> = shape.extract()?;
+                let shape = [1, shape[0] as usize, shape[1] as usize, shape[2] as usize];
                 ObservationSpace::Box { shape }
             }
             _ => unimplemented!("Unsupported observation space"),
@@ -67,12 +68,12 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
     }
 }
 
-impl<'py> Env for GymSuperMarioBrosEnv<'py> {
+impl<'py> Env<4> for GymSuperMarioBrosEnv<'py> {
     fn action_space(&self) -> &ActionSpace {
         &self.action_space
     }
 
-    fn observation_space(&self) -> &ObservationSpace {
+    fn observation_space(&self) -> &ObservationSpace<4> {
         &self.observation_space
     }
 
@@ -108,7 +109,7 @@ mod tests {
             "SuperMarioBros-v3",
             ActionSpace::Discrete(12),
             ObservationSpace::Box {
-                shape: vec![240, 256, 3],
+                shape: [1, 240, 256, 3],
             },
         )] {
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
@@ -118,12 +119,12 @@ mod tests {
                 let observation = env.reset()?;
                 assert_eq!(
                     observation.len(),
-                    observation_space.shape().iter().product::<i64>() as usize
+                    observation_space.shape()[1..].iter().product::<usize>(),
                 );
                 let (observation, reward, _is_done) = env.step(&Action::Discrete(0))?;
                 assert_eq!(
                     observation.len(),
-                    observation_space.shape().iter().product::<i64>() as usize
+                    observation_space.shape()[1..].iter().product::<usize>()
                 );
                 // check that experience is printed
                 // because pyo3 failed silently

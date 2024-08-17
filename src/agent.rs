@@ -16,13 +16,13 @@ use burn::{
 };
 
 use crate::{
-    batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Estimator,
-    Experience, PrioritizedReplay, PrioritizedReplayAgent,
+    batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent
 };
 
 #[derive(Clone)]
 pub struct DeepQNetworkAgent<
     B: AutodiffBackend,
+    const D: usize,
     M: AutodiffModule<B>,
     O: SimpleOptimizer<B::InnerBackend>,
     S: LrScheduler<B>,
@@ -31,6 +31,7 @@ pub struct DeepQNetworkAgent<
     teacher_model: M,
     optimizer: OptimizerAdaptor<O, M, B>,
     lr_scheduler: S,
+    observation_space: ObservationSpace<D>,
     action_space: ActionSpace,
     device: B::Device,
     update_counter: usize,
@@ -40,15 +41,18 @@ pub struct DeepQNetworkAgent<
 
 impl<
         B: AutodiffBackend,
+    const D: usize,
+
         M: AutodiffModule<B> + Estimator<B>,
         O: SimpleOptimizer<B::InnerBackend>,
         S: LrScheduler<B>,
-    > DeepQNetworkAgent<B, M, O, S>
+    > DeepQNetworkAgent<B, D, M, O, S>
 {
     pub fn new(
         model: M,
         optimizer: OptimizerAdaptor<O, M, B>,
         lr_scheduler: S,
+        observation_space: ObservationSpace<D>,
         action_space: ActionSpace,
         device: B::Device,
         teacher_update_freq: usize,
@@ -60,6 +64,7 @@ impl<
             teacher_model,
             optimizer,
             lr_scheduler,
+            observation_space,
             action_space,
             device,
             update_counter: 0,
@@ -69,7 +74,7 @@ impl<
     }
 }
 
-impl<B, M, O, S> PrioritizedReplay<DeepQNetworkState> for DeepQNetworkAgent<B, M, O, S>
+impl<B, const D: usize, M, O, S> PrioritizedReplay<DeepQNetworkState> for DeepQNetworkAgent<B,D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B>,
@@ -126,7 +131,7 @@ where
     }
 }
 
-impl<B, M, O, S> Agent<DeepQNetworkState> for DeepQNetworkAgent<B, M, O, S>
+impl<B, const D:usize, M, O, S> Agent<DeepQNetworkState> for DeepQNetworkAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B>,
@@ -135,8 +140,9 @@ where
     S: LrScheduler<B> + Clone,
 {
     fn policy(&self, observation: &[f32]) -> Action {
+        let shape = self.observation_space.shape();
         let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new([1, observation.len()])).convert(),
+            Data::new(observation.to_vec(), Shape::new(shape.clone())).convert(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
@@ -162,20 +168,24 @@ where
     ) -> anyhow::Result<()> {
         let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
 
+        let batch_size = experiences.len();
+        let mut shape = self.observation_space.shape().clone();
+        shape[0] = batch_size;
+
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
-        let q_value = model.predict(observation);
+        let q_value = model.predict(observation.reshape(shape.clone()));
         let next_target_q_value = self
             .teacher_model
             .valid()
-            .predict(item.next_observation.clone().inner());
+            .predict(item.next_observation.clone().inner().reshape(shape.clone()));
         let next_target_q_value: Tensor<B, 2> =
             Tensor::from_inner(next_target_q_value).to_device(&self.device);
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
-                    let next_q_value = model.predict(item.next_observation.clone());
+                    let next_q_value = model.predict(item.next_observation.clone().reshape(shape.clone()));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
@@ -291,7 +301,7 @@ where
     }
 }
 
-impl<B, M, O, S> PrioritizedReplayAgent<DeepQNetworkState> for DeepQNetworkAgent<B, M, O, S>
+impl<B, const D:usize, M, O, S> PrioritizedReplayAgent<DeepQNetworkState> for DeepQNetworkAgent<B,D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B>,

@@ -24,18 +24,22 @@ use pyo3::Python;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(long)]
     artifacts_path: PathBuf,
-    #[arg(short, long)]
+    #[arg(long)]
     env_name: String,
-    #[arg(short, long)]
+    #[arg(long)]
     restore_path: Option<PathBuf>,
-    #[arg(short, long)]
+    #[arg(long)]
+    batch_size: usize,
+    #[arg(long)]
     prioritized: bool,
-    #[arg(short, long)]
+    #[arg(long)]
     dueling: bool,
-    #[arg(short, long)]
+    #[arg(long)]
     double_dqn: bool,
+    #[arg(long)]
+    noisy: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -70,15 +74,18 @@ fn main() -> anyhow::Result<()> {
             env.observation_space(),
             env.action_space(),
             args.dueling,
+            args.noisy,
         );
         let optimizer = AdamConfig::new()
             .with_grad_clipping(Some(GradientClippingConfig::Value(1.0)))
+            .with_epsilon(0.01 / args.batch_size as f32)
             .init();
 
         let mut agent = DeepQNetworkAgent::new(
             model,
             optimizer,
-            ConstantLr::new(0.001),
+            ConstantLr::new(0.00025),
+            env.observation_space().clone(),
             env.action_space().clone(),
             device,
             1000,
@@ -90,14 +97,13 @@ fn main() -> anyhow::Result<()> {
         }
 
         if args.prioritized {
-            let mut memory = PrioritizedReplayMemory::new(2usize.pow(14), 64, 0.6)?;
+            let mut memory = PrioritizedReplayMemory::new(2usize.pow(20), args.batch_size, 0.6)?;
 
-            let trainer =
-                PrioritizedReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.99, artifacts_path, true)?;
+            let trainer = PrioritizedReplayTrainer::new(10000, 0.99, artifacts_path, true)?;
 
             trainer.train_loop(&mut agent, &mut env, &mut memory)?;
         } else {
-            let mut memory = UniformReplayMemory::new(2usize.pow(16), 64)?;
+            let mut memory = UniformReplayMemory::new(2usize.pow(20), args.batch_size)?;
 
             let trainer =
                 UniformReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.99, artifacts_path, true)?;
