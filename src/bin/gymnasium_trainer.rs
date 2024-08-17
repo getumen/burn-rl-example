@@ -40,6 +40,10 @@ struct Args {
     double_dqn: bool,
     #[arg(long)]
     noisy: bool,
+    #[arg(long)]
+    n_step: usize,
+    #[arg(long)]
+    qvalue_gamma: f32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -89,6 +93,7 @@ fn main() -> anyhow::Result<()> {
             env.action_space().clone(),
             device,
             1000,
+            args.n_step,
             args.double_dqn,
         );
 
@@ -97,16 +102,29 @@ fn main() -> anyhow::Result<()> {
         }
 
         if args.prioritized {
-            let mut memory = PrioritizedReplayMemory::new(2usize.pow(20), args.batch_size, 0.6)?;
+            let mut memory = PrioritizedReplayMemory::new(
+                2usize.pow(20),
+                args.batch_size,
+                args.n_step,
+                0.6,
+                args.qvalue_gamma,
+            )?;
 
-            let trainer = PrioritizedReplayTrainer::new(10000, 0.99, artifacts_path, true)?;
+            let trainer = PrioritizedReplayTrainer::new(10000, args.qvalue_gamma, artifacts_path, true)?;
 
             trainer.train_loop(&mut agent, &mut env, &mut memory)?;
         } else {
             let mut memory = UniformReplayMemory::new(2usize.pow(20), args.batch_size)?;
 
-            let trainer =
-                UniformReplayTrainer::new(10000, 0.99, 1.0, 0.01, 0.99, artifacts_path, true)?;
+            let trainer = UniformReplayTrainer::new(
+                10000,
+                0.99,
+                1.0,
+                0.01,
+                args.qvalue_gamma,
+                artifacts_path,
+                true,
+            )?;
 
             trainer.train_loop(&mut agent, &mut env, &mut memory)?;
         }

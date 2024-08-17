@@ -37,6 +37,8 @@ pub struct DeepQNetworkAgent<
     device: B::Device,
     update_counter: usize,
     teacher_update_freq: usize,
+
+    n_step: usize,
     double_dqn: bool,
 }
 
@@ -56,6 +58,8 @@ impl<
         action_space: ActionSpace,
         device: B::Device,
         teacher_update_freq: usize,
+
+        n_step: usize,
         double_dqn: bool,
     ) -> Self {
         let teacher_model = model.clone().fork(&device);
@@ -69,6 +73,7 @@ impl<
             device,
             update_counter: 0,
             teacher_update_freq,
+            n_step,
             double_dqn,
         }
     }
@@ -117,7 +122,7 @@ where
             * (item.action.ones_like().inner() - item.action.clone().inner())
             + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma)
+            .mul_scalar(gamma.powi(self.n_step as i32))
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
@@ -147,10 +152,7 @@ where
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
-        println!(
-            "score: {:?}",
-            scores.to_data().value
-        );
+        println!("score: {:?}", scores.to_data().value);
         match self.action_space {
             ActionSpace::Discrete(..) => {
                 let scores = scores.argmax(1);

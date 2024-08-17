@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write as _, path::PathBuf};
+use std::{collections::VecDeque, fs::File, io::Write as _, path::PathBuf};
 
 use crate::{Env, Experience, PrioritizedReplayAgent, State};
 
@@ -108,12 +108,22 @@ pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'st
     batch_size: usize,
     counter: usize,
     alpha: f32,
+    gamma: f32,
 
     max_priority: f32,
+
+    n_step: usize,
+    n_step_buffer: VecDeque<Experience<S>>,
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<S> {
-    pub fn new(max_buffer_size: usize, batch_size: usize, alpha: f32) -> anyhow::Result<Self> {
+    pub fn new(
+        max_buffer_size: usize,
+        batch_size: usize,
+        n_step: usize,
+        alpha: f32,
+        gamma: f32,
+    ) -> anyhow::Result<Self> {
         let file = NamedTempFile::new().with_context(|| "create temp file")?;
         let db = Builder::new().create(file)?;
         let table_definition: TableDefinition<u32, Experience<S>> =
@@ -132,8 +142,11 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
             batch_size,
             counter: 0,
             alpha,
+            gamma,
 
             max_priority: 1.0,
+            n_step,
+            n_step_buffer: VecDeque::with_capacity(n_step + 1),
         })
     }
 
@@ -146,6 +159,31 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
     }
 
     fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
+        self.n_step_buffer.push_back(experience.clone());
+        if self.n_step_buffer.len() < self.n_step {
+            return Ok(());
+        }
+        if self.n_step_buffer.len() > self.n_step {
+            self.n_step_buffer.pop_front();
+        }
+        let mut total_reward = 0.0;
+        let mut finally_done = false;
+        for (i, exp) in self.n_step_buffer.iter().enumerate() {
+            let mask = if exp.is_done() { 0.0 } else { 1.0 };
+            total_reward += self.gamma * self.alpha.powi(i as i32) * mask * exp.reward;
+            if exp.is_done {
+                finally_done = true;
+                break;
+            }
+        }
+
+        let experience = Experience {
+            state: self.n_step_buffer.front().unwrap().state().clone(),
+            action: self.n_step_buffer.front().unwrap().action().clone(),
+            reward: total_reward,
+            is_done: finally_done,
+        };
+
         let write_txn = self.buffer.begin_write()?;
         {
             let mut table = write_txn.open_table(self.table_definition)?;
