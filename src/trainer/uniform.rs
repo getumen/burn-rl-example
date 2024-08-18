@@ -9,12 +9,11 @@ use tempfile::NamedTempFile;
 
 use crate::{Action, ActionSpace, Agent, Env, Experience, State};
 
+use super::{NStepExperience, RandomPolicy};
+
 pub struct UniformReplayTrainer {
     episode: usize,
     gamma: f32,
-    init_exploration: f32,
-    final_exploration: f32,
-    exploration_decay: f32,
     artifacts_dir: PathBuf,
     render: bool,
 }
@@ -23,9 +22,6 @@ impl UniformReplayTrainer {
     pub fn new(
         episode: usize,
         gamma: f32,
-        init_exploration: f32,
-        final_exploration: f32,
-        exploration_decay: f32,
         artifacts_dir: PathBuf,
         render: bool,
     ) -> anyhow::Result<Self> {
@@ -33,9 +29,6 @@ impl UniformReplayTrainer {
         Ok(Self {
             episode,
             gamma,
-            init_exploration,
-            final_exploration,
-            exploration_decay,
             artifacts_dir,
             render,
         })
@@ -46,6 +39,7 @@ impl UniformReplayTrainer {
         agent: &mut impl Agent<S>,
         env: &mut impl Env<D>,
         memory: &mut UniformReplayMemory<S>,
+        random_policy: &Option<RandomPolicy>,
     ) -> anyhow::Result<()> {
         for epi in 0..self.episode {
             let mut step = 0;
@@ -68,19 +62,20 @@ impl UniformReplayTrainer {
                     env.render()?;
                 }
 
-                let action = if (self.init_exploration * self.exploration_decay.powf(epi as f32))
-                    .max(self.final_exploration)
-                    < rand::thread_rng().gen::<f32>()
-                {
-                    agent.policy(&observation)
-                } else {
-                    let action_space = env.action_space();
-                    match action_space {
-                        ActionSpace::Discrete(n) => {
-                            let action = rand::thread_rng().gen_range(0..*n);
-                            Action::Discrete(action)
+                let action = if let Some(policy) = random_policy {
+                    if policy.sample(epi) {
+                        let action_space = env.action_space();
+                        match action_space {
+                            ActionSpace::Discrete(n) => {
+                                let action = rand::thread_rng().gen_range(0..*n);
+                                Action::Discrete(action)
+                            }
                         }
+                    } else {
+                        agent.policy(&observation)
                     }
+                } else {
+                    agent.policy(&observation)
                 };
 
                 (observation, reward, is_done) = env.step(&action)?;
@@ -118,13 +113,19 @@ impl UniformReplayTrainer {
 pub struct UniformReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
     buffer: Database,
     table_definition: TableDefinition<'static, u32, Experience<S>>,
+    nstep_experiences: NStepExperience<S>,
     max_buffer_size: usize,
     batch_size: usize,
     counter: usize,
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
-    pub fn new(max_buffer_size: usize, batch_size: usize) -> anyhow::Result<Self> {
+    pub fn new(
+        max_buffer_size: usize,
+        batch_size: usize,
+        n_step: usize,
+        gamma: f32,
+    ) -> anyhow::Result<Self> {
         let file = NamedTempFile::new().with_context(|| "create temp file")?;
         let db = Builder::new().create(file)?;
         let table_definition: TableDefinition<u32, Experience<S>> =
@@ -137,6 +138,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
         Ok(Self {
             buffer: db,
             table_definition,
+            nstep_experiences: NStepExperience::new(n_step, 0.99),
             max_buffer_size,
             batch_size,
             counter: 0,
@@ -144,6 +146,13 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
     }
 
     fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
+        let experience = self.nstep_experiences.push(experience)?;
+        let experience = if let Some(v) = experience {
+            v
+        } else {
+            return Ok(());
+        };
+
         let write_txn = self.buffer.begin_write()?;
         {
             let mut table = write_txn.open_table(self.table_definition)?;

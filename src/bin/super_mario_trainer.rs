@@ -14,6 +14,7 @@ use burn_rl_example::{
     trainer::{
         prioritized::{PrioritizedReplayMemory, PrioritizedReplayTrainer},
         uniform::{UniformReplayMemory, UniformReplayTrainer},
+        RandomPolicy,
     },
     Agent, Env as _,
 };
@@ -43,7 +44,7 @@ struct Args {
     #[arg(long)]
     n_step: usize,
     #[arg(long)]
-    qvalue_gamma: f32,
+    bellman_gamma: f32,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -101,32 +102,37 @@ fn main() -> anyhow::Result<()> {
             agent.load(restore_path).with_context(|| "load agent")?;
         }
 
+        let random_policy = if !args.noisy {
+            Some(RandomPolicy::new(1.0, 0.01, 0.99))
+        } else {
+            None
+        };
+
         if args.prioritized {
             let mut memory = PrioritizedReplayMemory::new(
                 2usize.pow(20),
                 args.batch_size,
                 args.n_step,
                 0.6,
-                args.qvalue_gamma,
+                args.bellman_gamma,
             )?;
 
-            let trainer = PrioritizedReplayTrainer::new(10000, args.qvalue_gamma, artifacts_path, true)?;
+            let trainer =
+                PrioritizedReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
 
-            trainer.train_loop(&mut agent, &mut env, &mut memory)?;
+            trainer.train_loop(&mut agent, &mut env, &mut memory, &random_policy)?;
         } else {
-            let mut memory = UniformReplayMemory::new(2usize.pow(20), args.batch_size)?;
-
-            let trainer = UniformReplayTrainer::new(
-                10000,
-                0.99,
-                1.0,
-                0.01,
-                args.qvalue_gamma,
-                artifacts_path,
-                true,
+            let mut memory = UniformReplayMemory::new(
+                2usize.pow(20),
+                args.batch_size,
+                args.n_step,
+                args.bellman_gamma,
             )?;
 
-            trainer.train_loop(&mut agent, &mut env, &mut memory)?;
+            let trainer =
+                UniformReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+
+            trainer.train_loop(&mut agent, &mut env, &mut memory, &random_policy)?;
         }
 
         Ok(())
