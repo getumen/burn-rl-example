@@ -17,7 +17,7 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
     pub fn new(py: Python<'py>, env_name: &str) -> anyhow::Result<Self> {
         let sys = py.import_bound("sys")?;
         let path = sys.getattr("path")?;
-        path.call_method1("append", (".venv/lib/python3.12/site-packages",))
+        path.call_method1("append", (".venv/lib/python3.11/site-packages",))
             .with_context(|| "fail to append path. use rye sync")?;
 
         let nes_wrappers = py.import_bound("nes_py.wrappers")?;

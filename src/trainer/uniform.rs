@@ -138,7 +138,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
         Ok(Self {
             buffer: db,
             table_definition,
-            nstep_experiences: NStepExperience::new(n_step, 0.99),
+            nstep_experiences: NStepExperience::new(n_step, gamma),
             max_buffer_size,
             batch_size,
             counter: 0,
