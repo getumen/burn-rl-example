@@ -76,6 +76,14 @@ pub enum ActionSpace {
     Discrete(i64),
 }
 
+impl ActionSpace {
+    pub fn size(&self) -> usize {
+        match self {
+            ActionSpace::Discrete(n) => *n as usize,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
     Discrete(i64),
@@ -104,6 +112,10 @@ impl<const D: usize> ObservationSpace<D> {
 
 pub trait Estimator<B: Backend> {
     fn predict<const D: usize>(&self, observation: Tensor<B, D>) -> Tensor<B, 2>;
+}
+
+pub trait Distributional<B: Backend> {
+    fn get_distribution<const D: usize>(&self, observation: Tensor<B, D>) -> Tensor<B, 3>;
 }
 
 pub trait Agent<S: State>: Clone + Send {

@@ -6,13 +6,23 @@
 #   features: []
 #   all-features: false
 #   with-sources: false
-#   generate-hashes: false
-#   universal: false
 
 -e file:.
+ale-py==0.8.1
+    # via shimmy
+autorom==0.4.2
+    # via gymnasium
+autorom-accept-rom-license==0.6.1
+    # via autorom
 box2d-py==2.3.5
     # via gymnasium
+certifi==2024.7.4
+    # via requests
+charset-normalizer==3.3.2
+    # via requests
 click==8.1.7
+    # via autorom
+    # via autorom-accept-rom-license
     # via burn-rl-example
 cloudpickle==3.0.0
     # via gym
@@ -34,6 +44,11 @@ gym-super-mario-bros==7.4.0
     # via burn-rl-example
 gymnasium==0.29.1
     # via burn-rl-example
+    # via shimmy
+idna==3.7
+    # via requests
+importlib-resources==6.4.3
+    # via ale-py
 kiwisolver==1.4.5
     # via matplotlib
 matplotlib==3.9.1
@@ -41,11 +56,13 @@ matplotlib==3.9.1
 nes-py==8.2.1
     # via gym-super-mario-bros
 numpy==1.26.4
+    # via ale-py
     # via contourpy
     # via gym
     # via gymnasium
     # via matplotlib
     # via nes-py
+    # via shimmy
 packaging==24.1
     # via matplotlib
 pillow==10.4.0
@@ -58,11 +75,19 @@ pyparsing==3.1.2
     # via matplotlib
 python-dateutil==2.9.0.post0
     # via matplotlib
+requests==2.32.3
+    # via autorom
+    # via autorom-accept-rom-license
+shimmy==0.2.1
+    # via gymnasium
 six==1.16.0
     # via python-dateutil
 swig==4.2.1
     # via gymnasium
 tqdm==4.66.4
+    # via autorom
     # via nes-py
 typing-extensions==4.12.2
     # via gymnasium
+urllib3==2.2.2
+    # via requests

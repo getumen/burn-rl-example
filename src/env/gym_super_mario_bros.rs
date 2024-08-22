@@ -24,12 +24,12 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
         let joypad_space = nes_wrappers.getattr("JoypadSpace")?;
         let gym = py.import_bound("gym_super_mario_bros")?;
         let gym_actions = py.import_bound("gym_super_mario_bros.actions")?;
-        let complex_movement = gym_actions.getattr("COMPLEX_MOVEMENT")?;
+        let movement = gym_actions.getattr("RIGHT_ONLY")?;
         let make_func = gym.getattr("make")?;
         let env = make_func
             .call((env_name,), None)
             .with_context(|| "fail to call make function")?;
-        let env = joypad_space.call((env, complex_movement), None)?;
+        let env = joypad_space.call((env, movement), None)?;
 
         let action_space = env
             .getattr("action_space")

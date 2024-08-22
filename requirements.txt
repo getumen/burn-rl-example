@@ -1,4 +1,4 @@
-gymnasium[box2d]==0.29.1
+gymnasium[box2d,atari,accept-rom-license]==0.29.1
 gym==0.23.1
 gym-super-mario-bros==7.4.0
 matplotlib==3.9.1
