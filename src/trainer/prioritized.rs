@@ -1,6 +1,6 @@
-use std::{collections::VecDeque, fs::File, io::Write as _, path::PathBuf};
+use std::{fs::File, io::Write as _, path::PathBuf};
 
-use crate::{Env, Experience, PrioritizedReplayAgent, State};
+use crate::{Action, ActionSpace, Env, Experience, PrioritizedReplayAgent, State};
 
 use anyhow::Context as _;
 use rand::Rng as _;
@@ -8,6 +8,8 @@ use redb::{Builder, Database, TableDefinition};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
 use tempfile::NamedTempFile;
+
+use super::{NStepExperience, RandomPolicy};
 
 pub struct PrioritizedReplayTrainer {
     episode: usize,
@@ -37,6 +39,7 @@ impl PrioritizedReplayTrainer {
         agent: &mut impl PrioritizedReplayAgent<S>,
         env: &mut impl Env<D>,
         memory: &mut PrioritizedReplayMemory<S>,
+        random_policy: &Option<RandomPolicy>,
     ) -> anyhow::Result<()> {
         for epi in 0..self.episode {
             let mut step = 0;
@@ -59,7 +62,21 @@ impl PrioritizedReplayTrainer {
                     env.render()?;
                 }
 
-                let action = agent.policy(&observation);
+                let action = if let Some(policy) = random_policy {
+                    if policy.sample(epi) {
+                        let action_space = env.action_space();
+                        match action_space {
+                            ActionSpace::Discrete(n) => {
+                                let action = rand::thread_rng().gen_range(0..*n);
+                                Action::Discrete(action)
+                            }
+                        }
+                    } else {
+                        agent.policy(&observation)
+                    }
+                } else {
+                    agent.policy(&observation)
+                };
 
                 (observation, reward, is_done) = env.step(&action)?;
                 state = agent.make_state(&observation, &state);
@@ -104,16 +121,13 @@ pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'st
     buffer: Database,
     table_definition: TableDefinition<'static, u32, Experience<S>>,
     priorities: SumTree,
+    nstep_experiences: NStepExperience<S>,
     max_buffer_size: usize,
     batch_size: usize,
     counter: usize,
     alpha: f32,
-    gamma: f32,
 
     max_priority: f32,
-
-    n_step: usize,
-    n_step_buffer: VecDeque<Experience<S>>,
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<S> {
@@ -138,15 +152,12 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
             buffer: db,
             table_definition,
             priorities: SumTree::new(max_buffer_size),
+            nstep_experiences: NStepExperience::new(n_step, gamma),
             max_buffer_size,
             batch_size,
             counter: 0,
             alpha,
-            gamma,
-
             max_priority: 1.0,
-            n_step,
-            n_step_buffer: VecDeque::with_capacity(n_step + 1),
         })
     }
 
@@ -159,29 +170,11 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
     }
 
     fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
-        self.n_step_buffer.push_back(experience.clone());
-        if self.n_step_buffer.len() < self.n_step {
+        let experience = self.nstep_experiences.push(experience)?;
+        let experience = if let Some(v) = experience {
+            v
+        } else {
             return Ok(());
-        }
-        if self.n_step_buffer.len() > self.n_step {
-            self.n_step_buffer.pop_front();
-        }
-        let mut total_reward = 0.0;
-        let mut finally_done = false;
-        for (i, exp) in self.n_step_buffer.iter().enumerate() {
-            let mask = if exp.is_done() { 0.0 } else { 1.0 };
-            total_reward += self.gamma * self.alpha.powi(i as i32) * mask * exp.reward;
-            if exp.is_done {
-                finally_done = true;
-                break;
-            }
-        }
-
-        let experience = Experience {
-            state: self.n_step_buffer.front().unwrap().state().clone(),
-            action: self.n_step_buffer.front().unwrap().action().clone(),
-            reward: total_reward,
-            is_done: finally_done,
         };
 
         let write_txn = self.buffer.begin_write()?;
