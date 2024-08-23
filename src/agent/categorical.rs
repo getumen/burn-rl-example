@@ -238,7 +238,9 @@ where
                 );
                 let target_probs = Tensor::from_inner(target_probs);
 
-                let prob = self.model.get_distribution(item.observation.clone().reshape(shape.clone()));
+                let prob = self
+                    .model
+                    .get_distribution(item.observation.clone().reshape(shape.clone()));
                 let prob = prob
                     .gather(
                         1,
@@ -469,7 +471,11 @@ mod tests {
             );
 
             approx::assert_abs_diff_eq!(expected.iter().sum::<f32>(), 1.0f32, epsilon = 1e-6);
-            approx::assert_abs_diff_eq!(result.clone().to_data().value.iter().sum::<f32>(), 1.0f32, epsilon = 1e-6);
+            approx::assert_abs_diff_eq!(
+                result.clone().to_data().value.iter().sum::<f32>(),
+                1.0f32,
+                epsilon = 1e-6
+            );
             assert_eq!(
                 result
                     .to_data()

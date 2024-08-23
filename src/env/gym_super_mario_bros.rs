@@ -24,7 +24,7 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
         let joypad_space = nes_wrappers.getattr("JoypadSpace")?;
         let gym = py.import_bound("gym_super_mario_bros")?;
         let gym_actions = py.import_bound("gym_super_mario_bros.actions")?;
-        let movement = gym_actions.getattr("RIGHT_ONLY")?;
+        let movement = gym_actions.getattr("COMPLEX_MOVEMENT")?;
         let make_func = gym.getattr("make")?;
         let env = make_func
             .call((env_name,), None)
@@ -108,7 +108,7 @@ mod tests {
     fn test_gym_env_discrete() -> anyhow::Result<()> {
         for (env_name, action_space, observation_space) in [(
             "SuperMarioBros-v3",
-            ActionSpace::Discrete(12),
+            ActionSpace::Discrete(5),
             ObservationSpace::Box {
                 shape: [1, 3, 240, 256],
             },
