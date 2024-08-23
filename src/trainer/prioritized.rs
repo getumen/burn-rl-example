@@ -1,13 +1,25 @@
-use std::{fs::File, io::Write as _, path::PathBuf};
+use std::{
+    fs::File,
+    io::{Cursor, Write as _},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::Receiver,
+        Arc,
+    },
+    thread::JoinHandle,
+    time::Duration,
+};
 
 use crate::{Action, ActionSpace, Env, Experience, PrioritizedReplayAgent, State};
 
 use anyhow::Context as _;
+use parking_lot::RwLock;
 use rand::Rng as _;
-use redb::{Builder, Database, TableDefinition};
+use rocksdb::{DBCompressionType, DBWithThreadMode, MultiThreaded, Options};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
-use tempfile::NamedTempFile;
+use tempfile::TempDir;
 
 use super::{NStepExperience, RandomPolicy};
 
@@ -118,16 +130,24 @@ impl PrioritizedReplayTrainer {
 }
 
 pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
-    buffer: Database,
-    table_definition: TableDefinition<'static, u32, Experience<S>>,
-    priorities: SumTree,
+    _buffer_dir: TempDir,
+    buffer: Arc<DBWithThreadMode<MultiThreaded>>,
+    priorities: Arc<RwLock<SumTree>>,
     nstep_experiences: NStepExperience<S>,
     max_buffer_size: usize,
-    batch_size: usize,
-    counter: usize,
+    counter: Arc<AtomicUsize>,
     alpha: f32,
 
     max_priority: f32,
+
+    batch_channel: Receiver<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)>,
+    _samplers: Vec<JoinHandle<()>>,
+}
+
+impl<S: State + Serialize + DeserializeOwned + 'static> Drop for PrioritizedReplayMemory<S> {
+    fn drop(&mut self) {
+        let _ = DBWithThreadMode::<MultiThreaded>::destroy(&Options::default(), self.buffer.path());
+    }
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<S> {
@@ -138,26 +158,74 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
         alpha: f32,
         gamma: f32,
     ) -> anyhow::Result<Self> {
-        let file = NamedTempFile::new().with_context(|| "create temp file")?;
-        let db = Builder::new().create(file)?;
-        let table_definition: TableDefinition<u32, Experience<S>> =
-            TableDefinition::new("experience");
+        let dir = TempDir::new()?;
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.optimize_for_point_lookup(4 * 1024);
+        opts.set_compression_type(DBCompressionType::Zstd);
+        let buffer = Arc::new(DBWithThreadMode::<MultiThreaded>::open(&opts, dir.path())?);
 
-        let wrote_txn = db.begin_write()?;
-        {
-            wrote_txn.open_table(table_definition)?;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let priorities = Arc::new(RwLock::new(SumTree::new(max_buffer_size)));
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+
+        let sampler_num = 4;
+        let mut _samplers = Vec::with_capacity(sampler_num);
+
+        for _ in 0..sampler_num {
+            let tx_clone = tx.clone();
+            let buffer_clone = buffer.clone();
+            let priorities_clone = priorities.clone();
+            let counter_clone = counter.clone();
+
+            let _sampler = std::thread::spawn(move || {
+                while counter_clone.load(Ordering::Relaxed) < batch_size {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                loop {
+                    let (indexes, experiences, weights) = {
+                        let priorities: Vec<(usize, f32)> = {
+                            let priorities = priorities_clone.read();
+                            (0..batch_size)
+                                .into_iter()
+                                .map(|_| priorities.sample())
+                                .collect()
+                        };
+                        let mut indexes = Vec::with_capacity(batch_size);
+                        let mut experiences = Vec::with_capacity(batch_size);
+                        let mut weights = Vec::with_capacity(batch_size);
+                        for (index, weight) in priorities {
+                            let experience =
+                                if let Some(v) = buffer_clone.get(index.to_le_bytes()).unwrap() {
+                                    rmp_serde::from_read(Cursor::new(v)).unwrap()
+                                } else {
+                                    println!("invalid index: {}", index);
+                                    continue;
+                                };
+                            indexes.push(index);
+                            experiences.push(experience);
+                            weights.push(weight);
+                        }
+                        (indexes, experiences, weights)
+                    };
+                    tx_clone.send((indexes, experiences, weights)).unwrap();
+                }
+            });
+            _samplers.push(_sampler);
         }
-        wrote_txn.commit()?;
+
         Ok(Self {
-            buffer: db,
-            table_definition,
-            priorities: SumTree::new(max_buffer_size),
+            _buffer_dir: dir,
+            buffer,
+            priorities,
             nstep_experiences: NStepExperience::new(n_step, gamma),
             max_buffer_size,
-            batch_size,
-            counter: 0,
+            counter,
             alpha,
             max_priority: 1.0,
+            batch_channel: rx,
+            _samplers,
         })
     }
 
@@ -165,7 +233,8 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
         for (index, td_error) in indexes.iter().zip(td_errors) {
             self.max_priority = self.max_priority.max(td_error);
             let priority = (td_error + 0.001).powf(self.alpha);
-            self.priorities.set(*index, priority);
+            let mut priorities = self.priorities.write();
+            priorities.set(*index, priority);
         }
     }
 
@@ -177,44 +246,19 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
             return Ok(());
         };
 
-        let write_txn = self.buffer.begin_write()?;
-        {
-            let mut table = write_txn.open_table(self.table_definition)?;
-            let priority = (self.max_priority + 0.001).powf(self.alpha);
-            if self.counter == self.max_buffer_size {
-                self.counter = 0;
-            }
-            table.insert(self.counter as u32, experience)?;
-            self.priorities.set(self.counter, priority);
-            self.counter += 1;
-        }
-        write_txn.commit()?;
+        let priority = (self.max_priority + 0.001).powf(self.alpha);
+        let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.max_buffer_size;
+        let value = rmp_serde::to_vec(&experience)?;
+
+        let mut priorities = self.priorities.write();
+        self.buffer.put(index.to_le_bytes(), value)?;
+        priorities.set(index, priority);
 
         Ok(())
     }
 
     pub fn sample(&self) -> anyhow::Result<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)> {
-        let read_txn = self.buffer.begin_read()?;
-        let table = read_txn.open_table(self.table_definition)?;
-        let mut indexes = Vec::with_capacity(self.batch_size);
-        let mut experiences = Vec::with_capacity(self.batch_size);
-        let mut weights = Vec::with_capacity(self.batch_size);
-        let mut counter = 0;
-        while counter < self.batch_size {
-            let (index, weight) = self.priorities.sample();
-            let experience = if let Some(v) = table.get(index as u32).unwrap() {
-                v.value()
-            } else {
-                println!("invalid index: {}", index);
-                continue;
-            };
-            indexes.push(index);
-            experiences.push(experience);
-            weights.push(weight);
-
-            counter += 1;
-        }
-        Ok((indexes, experiences, weights))
+        Ok(self.batch_channel.recv().with_context(|| "recv batch")?)
     }
 }
 

@@ -1,11 +1,22 @@
-use std::{fs::File, io::Write, path::PathBuf}; // Add the Write trait import
+use std::{
+    fs::File,
+    io::{Cursor, Write},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc::Receiver,
+        Arc,
+    },
+    thread::JoinHandle,
+    time::Duration,
+}; // Add the Write trait import
 
 use anyhow::Context as _;
 use rand::Rng as _;
-use redb::{Builder, Database, ReadableTableMetadata, TableDefinition};
+use rocksdb::{DBCompressionType, DBWithThreadMode, MultiThreaded, Options};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
-use tempfile::NamedTempFile;
+use tempfile::TempDir;
 
 use crate::{Action, ActionSpace, Agent, Env, Experience, State};
 
@@ -111,12 +122,19 @@ impl UniformReplayTrainer {
 }
 
 pub struct UniformReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
-    buffer: Database,
-    table_definition: TableDefinition<'static, u32, Experience<S>>,
+    _buffer_dir: TempDir,
+    buffer: Arc<DBWithThreadMode<MultiThreaded>>,
     nstep_experiences: NStepExperience<S>,
     max_buffer_size: usize,
-    batch_size: usize,
-    counter: usize,
+    counter: Arc<AtomicUsize>,
+    batch_channel: Receiver<Vec<Experience<S>>>,
+    _samplers: Vec<JoinHandle<()>>,
+}
+
+impl<S: State + Serialize + DeserializeOwned + 'static> Drop for UniformReplayMemory<S> {
+    fn drop(&mut self) {
+        let _ = DBWithThreadMode::<MultiThreaded>::destroy(&Options::default(), self.buffer.path());
+    }
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
@@ -126,22 +144,65 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
         n_step: usize,
         gamma: f32,
     ) -> anyhow::Result<Self> {
-        let file = NamedTempFile::new().with_context(|| "create temp file")?;
-        let db = Builder::new().create(file)?;
-        let table_definition: TableDefinition<u32, Experience<S>> =
-            TableDefinition::new("experience");
-        let wrote_txn = db.begin_write()?;
-        {
-            wrote_txn.open_table(table_definition)?;
+        let dir = TempDir::new()?;
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.optimize_for_point_lookup(4 * 1024);
+        opts.set_compression_type(DBCompressionType::Zstd);
+        let buffer = Arc::new(DBWithThreadMode::<MultiThreaded>::open(&opts, dir.path())?);
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        let sampler_num = 4;
+        let mut _samplers = Vec::with_capacity(sampler_num);
+
+        for _ in 0..sampler_num {
+            let buffer_clone = buffer.clone();
+            let counter_clone = counter.clone();
+
+            let tx_clone = tx.clone();
+            let _sampler = std::thread::spawn(move || {
+                while counter_clone.load(Ordering::Relaxed) < batch_size {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                loop {
+                    let batch = {
+                        let mut batch = Vec::new();
+                        let counter = counter_clone.load(Ordering::Relaxed);
+
+                        let len = if counter > max_buffer_size {
+                            max_buffer_size
+                        } else {
+                            counter
+                        };
+                        let indexes = (0..batch_size)
+                            .map(|_| rand::thread_rng().gen_range(0..len))
+                            .collect::<Vec<_>>();
+                        for index in indexes {
+                            let experience =
+                                if let Some(v) = buffer_clone.get(index.to_le_bytes()).unwrap() {
+                                    rmp_serde::from_read(Cursor::new(v)).unwrap()
+                                } else {
+                                    println!("invalid index: {}", index);
+                                    continue;
+                                };
+                            batch.push(experience);
+                        }
+                        batch
+                    };
+                    tx_clone.send(batch).unwrap();
+                }
+            });
         }
-        wrote_txn.commit()?;
+
         Ok(Self {
-            buffer: db,
-            table_definition,
+            _buffer_dir: dir,
+            buffer,
             nstep_experiences: NStepExperience::new(n_step, gamma),
             max_buffer_size,
-            batch_size,
-            counter: 0,
+            counter,
+            batch_channel: rx,
+            _samplers,
         })
     }
 
@@ -153,35 +214,14 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
             return Ok(());
         };
 
-        let write_txn = self.buffer.begin_write()?;
-        {
-            let mut table = write_txn.open_table(self.table_definition)?;
-            table.insert(self.counter as u32, experience)?;
-            if self.counter == self.max_buffer_size {
-                self.counter = 0;
-            }
-        }
-        write_txn.commit()?;
-        self.counter += 1;
+        let value = rmp_serde::to_vec(&experience)?;
+        let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.max_buffer_size;
+        self.buffer.put(index.to_le_bytes(), value)?;
 
         Ok(())
     }
 
     fn sample(&self) -> anyhow::Result<Vec<Experience<S>>> {
-        let mut batch = Vec::new();
-
-        let read_txn = self.buffer.begin_read().unwrap();
-        {
-            let table = read_txn.open_table(self.table_definition).unwrap();
-            let len = table.len()?;
-            let indexes = (0..self.batch_size)
-                .map(|_| rand::thread_rng().gen_range(0..len))
-                .collect::<Vec<_>>();
-            for index in indexes {
-                let experience = table.get(index as u32)?;
-                batch.push(experience.unwrap().value());
-            }
-        }
-        Ok(batch)
+        Ok(self.batch_channel.recv().with_context(|| "recv batch")?)
     }
 }

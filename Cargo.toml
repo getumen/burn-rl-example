@@ -18,12 +18,13 @@ rmp-serde = "1.3.0"
 clap = { version = "4.5", features = ["derive"] }
 tch = {version = "0.15", features = ["download-libtorch"]}
 chrono = "0.4"
-redb = "2.1"
 tempfile = "3.12"
 zstd = "0.13"
 num-traits = "0.2"
 rand_distr = "0.4"
 itertools = "0.13"
+rocksdb = { version = "0.22.0", features = ["zstd"] }
+parking_lot = "0.12.3"
 
 [dev-dependencies]
 approx = "0.5"

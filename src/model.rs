@@ -71,7 +71,13 @@ pub struct DuelingLayer<B: Backend> {
 }
 
 impl<B: Backend> DuelingLayer<B> {
-    pub fn new(device: &B::Device, input_size: usize, num_class: usize, atoms: usize,  noisy: bool) -> Self {
+    pub fn new(
+        device: &B::Device,
+        input_size: usize,
+        num_class: usize,
+        atoms: usize,
+        noisy: bool,
+    ) -> Self {
         Self {
             value_linear1: if noisy {
                 LinearLayerType::NoisyLinear(NoisyLinearConfig::new(input_size, 64).init(device))
@@ -89,7 +95,9 @@ impl<B: Backend> DuelingLayer<B> {
                 LinearLayerType::Linear(LinearConfig::new(input_size, 64).init(device))
             },
             advantage_linear2: if noisy {
-                LinearLayerType::NoisyLinear(NoisyLinearConfig::new(64, num_class * atoms).init(device))
+                LinearLayerType::NoisyLinear(
+                    NoisyLinearConfig::new(64, num_class * atoms).init(device),
+                )
             } else {
                 LinearLayerType::Linear(LinearConfig::new(64, num_class * atoms).init(device))
             },
@@ -110,7 +118,8 @@ impl<B: Backend> DuelingLayer<B> {
             .forward(self.advantage_linear1.forward(x.clone()));
         let advantage = self.advantage_linear2.forward(advantage);
         let advantage = advantage.clone() - advantage.clone().mean_dim(1);
-        let output = value.reshape([batch_size, 1, self. atoms]) + advantage.reshape([batch_size, self.num_class, self.atoms]);
+        let output = value.reshape([batch_size, 1, self.atoms])
+            + advantage.reshape([batch_size, self.num_class, self.atoms]);
         output.reshape([batch_size, self.num_class * self.atoms])
     }
 }
@@ -121,7 +130,7 @@ pub enum ValueLayer<B: Backend> {
     Dueling(DuelingLayer<B>),
 }
 
-impl <B:Backend> ValueLayer<B> {
+impl<B: Backend> ValueLayer<B> {
     pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
         match self {
             ValueLayer::Linear(layer) => layer.forward(x),
@@ -225,13 +234,13 @@ impl<B: Backend> DeepQNetworkModel<B> {
         noisy: bool,
         output_layer_config: OutputLayerConfig,
     ) -> Self {
+        let stride = 4;
+        let kernel_size = 4;
         let value_layer_input_dim = if D == 2 {
             64
         } else if D == 4 {
             let shape = observation_space.shape();
             let shape = [shape[1], shape[2], shape[3]];
-            let stride = 4;
-            let kernel_size = 4;
             let shape = [
                 16,
                 (shape[1] - kernel_size) / stride + 1,
@@ -252,8 +261,8 @@ impl<B: Backend> DeepQNetworkModel<B> {
             )
         } else if D == 4 {
             FeatureExtractionLayer::Conv2d(
-                Conv2dConfig::new([3, 16], [4, 4])
-                    .with_stride([4, 4])
+                Conv2dConfig::new([3, 16], [kernel_size, kernel_size])
+                    .with_stride([stride, stride])
                     .init(device),
             )
         } else {
@@ -264,14 +273,14 @@ impl<B: Backend> DeepQNetworkModel<B> {
             FeatureExtractionLayer::Linear(LinearConfig::new(64, 64).init(device))
         } else if D == 4 {
             FeatureExtractionLayer::Conv2d(
-                Conv2dConfig::new([16, 32], [4, 4])
-                    .with_stride([4, 4])
+                Conv2dConfig::new([16, 32], [kernel_size, kernel_size])
+                    .with_stride([stride, stride])
                     .init(device),
             )
         } else {
             unimplemented!()
         };
-        
+
         let output_layer = match output_layer_config {
             OutputLayerConfig::Expectation => {
                 let value_layer = if dueling {
@@ -290,7 +299,8 @@ impl<B: Backend> DeepQNetworkModel<B> {
                         noisy,
                     ))
                 };
-                OutputLayer::Expectation(value_layer)},
+                OutputLayer::Expectation(value_layer)
+            }
             OutputLayerConfig::CategoricalDistribution {
                 atoms,
                 max_value,
@@ -320,7 +330,7 @@ impl<B: Backend> DeepQNetworkModel<B> {
                     max_value,
                     device,
                 ))
-            } ,
+            }
         };
         Self {
             layer1,

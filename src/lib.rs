@@ -8,8 +8,7 @@ pub mod trainer;
 use std::{fmt::Debug, path::Path};
 
 use burn::tensor::{backend::Backend, Tensor};
-use redb::TypeName;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
 pub trait State: Clone + Debug + Send {
     fn new(observation: Vec<f32>) -> Self;
@@ -38,36 +37,6 @@ impl<S: State> Experience<S> {
 
     pub fn is_done(&self) -> bool {
         self.is_done
-    }
-}
-
-impl<S: State + Serialize + DeserializeOwned + Debug + 'static> redb::Value for Experience<S> {
-    type SelfType<'a> = Experience<S>;
-    type AsBytes<'a> = Vec<u8>;
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        let data = zstd::stream::decode_all(data).unwrap();
-        rmp_serde::from_slice(data.as_slice()).unwrap()
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
-    where
-        Self: 'a,
-        Self: 'b,
-    {
-        let data = rmp_serde::to_vec(value).unwrap();
-        zstd::stream::encode_all(data.as_slice(), 3).unwrap()
-    }
-
-    fn type_name() -> TypeName {
-        TypeName::new("Experience")
     }
 }
 
