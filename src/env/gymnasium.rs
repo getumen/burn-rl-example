@@ -14,7 +14,7 @@ pub struct GymnasiumEnv1D<'py> {
 }
 
 impl<'py> GymnasiumEnv1D<'py> {
-    pub fn new(py: Python<'py>, env_name: &str) -> anyhow::Result<Self> {
+    pub fn new(py: Python<'py>, env_name: &str, render: bool) -> anyhow::Result<Self> {
         let sys = py.import_bound("sys")?;
         let path = sys.getattr("path")?;
         path.call_method1("append", (".venv/lib/python3.11/site-packages",))
@@ -22,9 +22,10 @@ impl<'py> GymnasiumEnv1D<'py> {
 
         let gym = py.import_bound("gymnasium")?;
         let make_func = gym.getattr("make")?;
-        let kwargs = [("render_mode", "human")].into_py_dict_bound(py);
+        let mode = [("render_mode", "human")].into_py_dict_bound(py);
+        let kwargs = if render { Some(&mode) } else { None };
         let env = make_func
-            .call((env_name,), Some(&kwargs))
+            .call((env_name,), kwargs)
             .with_context(|| "fail to call make function")?;
         let action_space = env
             .getattr("action_space")
@@ -107,7 +108,7 @@ pub struct GymnasiumEnv3D<'py> {
 }
 
 impl<'py> GymnasiumEnv3D<'py> {
-    pub fn new(py: Python<'py>, env_name: &str) -> anyhow::Result<Self> {
+    pub fn new(py: Python<'py>, env_name: &str, render: bool) -> anyhow::Result<Self> {
         let sys = py.import_bound("sys")?;
         let path = sys.getattr("path")?;
         path.call_method1("append", (".venv/lib/python3.11/site-packages",))
@@ -115,9 +116,10 @@ impl<'py> GymnasiumEnv3D<'py> {
 
         let gym = py.import_bound("gymnasium")?;
         let make_func = gym.getattr("make")?;
-        let kwargs = [("render_mode", "human")].into_py_dict_bound(py);
+        let mode = [("render_mode", "human")].into_py_dict_bound(py);
+        let kwargs = if render { Some(&mode) } else { None };
         let env = make_func
-            .call((env_name,), Some(&kwargs))
+            .call((env_name,), kwargs)
             .with_context(|| "fail to call make function")?;
         let action_space = env
             .getattr("action_space")
@@ -220,7 +222,7 @@ mod tests {
             ),
         ] {
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
-                let mut env = GymnasiumEnv1D::new(py, env_name)?;
+                let mut env = GymnasiumEnv1D::new(py, env_name, true)?;
                 assert_eq!(env.action_space(), &action_space);
                 assert_eq!(env.observation_space(), &observation_space);
                 let observation = env.reset()?;
@@ -242,7 +244,7 @@ mod tests {
             },
         )] {
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
-                let mut env = GymnasiumEnv3D::new(py, env_name)?;
+                let mut env = GymnasiumEnv3D::new(py, env_name, true)?;
                 assert_eq!(env.action_space(), &action_space);
                 assert_eq!(env.observation_space(), &observation_space);
                 let observation = env.reset()?;

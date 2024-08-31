@@ -1,6 +1,6 @@
 use anyhow::Context as _;
 use pyo3::{
-    types::{PyAnyMethods as _, PyTypeMethods as _},
+    types::{IntoPyDict as _, PyAnyMethods as _, PyTypeMethods as _},
     Bound, PyAny, Python,
 };
 
@@ -14,7 +14,7 @@ pub struct GymSuperMarioBrosEnv<'py> {
 }
 
 impl<'py> GymSuperMarioBrosEnv<'py> {
-    pub fn new(py: Python<'py>, env_name: &str) -> anyhow::Result<Self> {
+    pub fn new(py: Python<'py>, env_name: &str, render: bool) -> anyhow::Result<Self> {
         let sys = py.import_bound("sys")?;
         let path = sys.getattr("path")?;
         path.call_method1("append", (".venv/lib/python3.11/site-packages",))
@@ -26,8 +26,12 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
         let gym_actions = py.import_bound("gym_super_mario_bros.actions")?;
         let movement = gym_actions.getattr("COMPLEX_MOVEMENT")?;
         let make_func = gym.getattr("make")?;
+
+        let mode = [("render_mode", "rgb_array")].into_py_dict_bound(py);
+        let kwargs = if render { None } else { Some(&mode) };
+
         let env = make_func
-            .call((env_name,), None)
+            .call((env_name,), kwargs)
             .with_context(|| "fail to call make function")?;
         let env = joypad_space.call((env, movement), None)?;
 
@@ -114,7 +118,7 @@ mod tests {
             },
         )] {
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
-                let mut env = GymSuperMarioBrosEnv::new(py, env_name)?;
+                let mut env = GymSuperMarioBrosEnv::new(py, env_name, true)?;
                 assert_eq!(env.action_space(), &action_space);
                 assert_eq!(env.observation_space(), &observation_space);
                 let observation = env.reset()?;

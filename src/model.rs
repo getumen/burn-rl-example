@@ -153,13 +153,17 @@ pub enum OutputLayerConfig {
         min_value: f32,
         max_value: f32,
     },
+    QuantileRegression {
+        quantiles: usize,
+    },
 }
 
 impl OutputLayerConfig {
-    pub fn atoms(&self) -> usize {
+    pub fn score_num(&self) -> usize {
         match self {
             OutputLayerConfig::Expectation => 1,
             OutputLayerConfig::CategoricalDistribution { atoms, .. } => *atoms,
+            OutputLayerConfig::QuantileRegression { quantiles } => *quantiles,
         }
     }
 }
@@ -169,13 +173,13 @@ pub struct CategoricalDistributionLayer<B: Backend> {
     value_layer: ValueLayer<B>,
     z: Tensor<B, 1>,
     atoms: usize,
-    output_size: usize,
+    action_num: usize,
 }
 
 impl<B: Backend> CategoricalDistributionLayer<B> {
     pub fn new(
         value_layer: ValueLayer<B>,
-        output_size: usize,
+        action_num: usize,
         atoms: usize,
         min_value: f32,
         max_value: f32,
@@ -190,7 +194,7 @@ impl<B: Backend> CategoricalDistributionLayer<B> {
             value_layer,
             z,
             atoms,
-            output_size,
+            action_num,
         }
     }
 
@@ -199,14 +203,45 @@ impl<B: Backend> CategoricalDistributionLayer<B> {
         let prob = self.forward_distribution(x);
         let q_means =
             (prob.clone() * self.z.clone().no_grad().reshape([1, 1, self.atoms])).sum_dim(2);
-        q_means.reshape([shape[0], self.output_size])
+        q_means.reshape([shape[0], self.action_num])
     }
 
     pub fn forward_distribution(&self, x: Tensor<B, 2>) -> Tensor<B, 3> {
         let shape = x.shape().dims;
         let x = self.value_layer.forward(x);
-        let x = x.reshape([shape[0], self.output_size, self.atoms]);
+        let x = x.reshape([shape[0], self.action_num, self.atoms]);
         burn::tensor::activation::softmax(x, 2)
+    }
+}
+
+#[derive(Module, Debug)]
+pub struct QuantileRegressionLayer<B: Backend> {
+    value_layer: ValueLayer<B>,
+    quantiles: usize,
+    action_num: usize,
+}
+
+impl<B: Backend> QuantileRegressionLayer<B> {
+    pub fn new(value_layer: ValueLayer<B>, quantiles: usize, action_num: usize) -> Self {
+        Self {
+            value_layer,
+            quantiles,
+            action_num,
+        }
+    }
+
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let shape = x.shape().dims;
+        let quantiles = self.forward_distribution(x);
+        let q_means = quantiles.mean_dim(2);
+        q_means.reshape([shape[0], self.action_num])
+    }
+
+    pub fn forward_distribution(&self, x: Tensor<B, 2>) -> Tensor<B, 3> {
+        let shape = x.shape().dims;
+        let x = self.value_layer.forward(x);
+        let x = x.reshape([shape[0], self.action_num, self.quantiles]);
+        x
     }
 }
 
@@ -215,6 +250,7 @@ impl<B: Backend> CategoricalDistributionLayer<B> {
 pub enum OutputLayer<B: Backend> {
     Expectation(ValueLayer<B>),
     CategoricalDistribution(CategoricalDistributionLayer<B>),
+    QuantileRegression(QuantileRegressionLayer<B>),
 }
 
 #[derive(Module, Debug)]
@@ -331,6 +367,29 @@ impl<B: Backend> DeepQNetworkModel<B> {
                     device,
                 ))
             }
+            OutputLayerConfig::QuantileRegression { quantiles } => {
+                let value_layer = if dueling {
+                    ValueLayer::Dueling(DuelingLayer::new(
+                        device,
+                        value_layer_input_dim,
+                        action_space.size(),
+                        quantiles,
+                        noisy,
+                    ))
+                } else {
+                    ValueLayer::Linear(LinearValueLayer::new(
+                        device,
+                        value_layer_input_dim,
+                        quantiles * action_space.size(),
+                        noisy,
+                    ))
+                };
+                OutputLayer::QuantileRegression(QuantileRegressionLayer::new(
+                    value_layer,
+                    quantiles,
+                    action_space.size(),
+                ))
+            }
         };
         Self {
             layer1,
@@ -370,6 +429,7 @@ impl<B: Backend> Estimator<B> for DeepQNetworkModel<B> {
                 ValueLayer::Dueling(layer) => layer.forward(x),
             },
             OutputLayer::CategoricalDistribution(layer) => layer.forward(x),
+            OutputLayer::QuantileRegression(layer) => layer.forward(x),
         }
     }
 }
@@ -400,6 +460,7 @@ impl<B: Backend> Distributional<B> for DeepQNetworkModel<B> {
         match &self.output_layer {
             OutputLayer::Expectation(_) => unimplemented!("Expectation not supported"),
             OutputLayer::CategoricalDistribution(layer) => layer.forward_distribution(x),
+            OutputLayer::QuantileRegression(layer) => layer.forward_distribution(x),
         }
     }
 }

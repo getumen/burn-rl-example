@@ -207,7 +207,7 @@ where
             * (item.action.ones_like().inner() - item.action.clone().inner())
             + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma)
+            .mul_scalar(gamma.powi(self.n_step as i32))
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let targets = Tensor::from_inner(targets);

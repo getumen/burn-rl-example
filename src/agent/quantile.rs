@@ -1,26 +1,27 @@
 use std::{fmt::Display, fs::File, path::Path};
 
+use anyhow::Context as _;
+use burn::{
+    data::dataloader::batcher::Batcher as _,
+    lr_scheduler::LrScheduler,
+    module::{AutodiffModule, ParamId},
+    nn::loss::HuberLossConfig,
+    optim::{
+        adaptor::OptimizerAdaptor,
+        record::{AdaptorRecord, AdaptorRecordItem},
+        GradientsParams, Optimizer as _, SimpleOptimizer,
+    },
+    record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder as _},
+    tensor::{backend::AutodiffBackend, Data, ElementConversion as _, Shape, Tensor},
+};
+
 use crate::{
     batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Distributional,
     Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
-use anyhow::Context;
-use burn::{
-    data::dataloader::batcher::Batcher,
-    lr_scheduler::LrScheduler,
-    module::{AutodiffModule, ParamId},
-    optim::{
-        adaptor::OptimizerAdaptor,
-        record::{AdaptorRecord, AdaptorRecordItem},
-        GradientsParams, Optimizer, SimpleOptimizer,
-    },
-    prelude::Backend,
-    record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder},
-    tensor::{backend::AutodiffBackend, Data, ElementConversion, Shape, Tensor},
-};
 
 #[derive(Clone)]
-pub struct CategoricalDeepQNetworkAgent<
+pub struct QuantileRegressionAgent<
     B: AutodiffBackend,
     const D: usize,
     M: AutodiffModule<B>,
@@ -39,9 +40,6 @@ pub struct CategoricalDeepQNetworkAgent<
 
     n_step: usize,
     double_dqn: bool,
-
-    min_value: f32,
-    max_value: f32,
 }
 
 impl<
@@ -50,7 +48,7 @@ impl<
         M: AutodiffModule<B> + Estimator<B> + Distributional<B>,
         O: SimpleOptimizer<B::InnerBackend>,
         S: LrScheduler<B>,
-    > CategoricalDeepQNetworkAgent<B, D, M, O, S>
+    > QuantileRegressionAgent<B, D, M, O, S>
 {
     pub fn new(
         model: M,
@@ -63,9 +61,6 @@ impl<
 
         n_step: usize,
         double_dqn: bool,
-
-        min_value: f32,
-        max_value: f32,
     ) -> Self {
         let teacher_model = model.clone().fork(&device);
         Self {
@@ -80,14 +75,12 @@ impl<
             teacher_update_freq,
             n_step,
             double_dqn,
-            min_value,
-            max_value,
         }
     }
 }
 
 impl<B, const D: usize, M, O, S> PrioritizedReplay<DeepQNetworkState>
-    for CategoricalDeepQNetworkAgent<B, D, M, O, S>
+    for QuantileRegressionAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B> + Distributional<B>,
@@ -149,8 +142,7 @@ where
     }
 }
 
-impl<B, const D: usize, M, O, S> Agent<DeepQNetworkState>
-    for CategoricalDeepQNetworkAgent<B, D, M, O, S>
+impl<B, const D: usize, M, O, S> Agent<DeepQNetworkState> for QuantileRegressionAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B> + Distributional<B>,
@@ -189,13 +181,18 @@ where
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
-        let next_probs = self
+        let next_quantiles = self
             .teacher_model
             .valid()
             .get_distribution(item.next_observation.clone().inner().reshape(shape.clone()));
 
-        let prob_shape = next_probs.shape().dims;
-        let num_atoms = prob_shape[2];
+        let quantile_shape = next_quantiles.shape().dims;
+        let num_quantile = quantile_shape[2];
+
+        let mut quantiles = Vec::new();
+        for i in 0..num_quantile {
+            quantiles.push((i as f32 + 0.5) / num_quantile as f32);
+        }
 
         let loss = match self.action_space {
             ActionSpace::Discrete(..) => {
@@ -206,7 +203,7 @@ where
                     let next_actions = next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_atoms);
+                        .repeat(2, num_quantile);
 
                     next_actions
                 } else {
@@ -217,49 +214,69 @@ where
                     let next_actions = next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_atoms);
+                        .repeat(2, num_quantile);
                     next_actions
                 };
-                let next_dists = next_probs
-                    .clone()
-                    .gather(1, next_actions)
-                    .reshape([batch_size, num_atoms, 1]);
-
-                let target_probs = shift_and_projection(
-                    next_dists,
-                    item.reward.clone().inner(),
-                    item.done.clone().inner(),
+                let next_quantiles = next_quantiles.clone().gather(1, next_actions).reshape([
                     batch_size,
-                    num_atoms,
-                    gamma,
-                    self.n_step,
-                    self.min_value,
-                    self.max_value,
-                );
-                let target_probs = Tensor::from_inner(target_probs);
+                    1,
+                    num_quantile,
+                ]);
 
-                let prob = self
+                let reward = item
+                    .reward
+                    .clone()
+                    .mean_dim(1)
+                    .inner()
+                    .reshape([batch_size, 1, 1]);
+                let done = item
+                    .done
+                    .clone()
+                    .mean_dim(1)
+                    .inner()
+                    .reshape([batch_size, 1, 1]);
+
+                let target_quantiles = reward
+                    + next_quantiles.mul_scalar(gamma.powi(self.n_step as i32))
+                        * (done.ones_like() - done); // [batch_size, 1, num_quantile]
+                let target_quantiles = Tensor::from_inner(target_quantiles);
+
+                let quantile_values = self
                     .model
                     .get_distribution(item.observation.clone().reshape(shape.clone()));
-                let prob = prob
-                    .gather(
-                        1,
-                        item.action
-                            .clone()
-                            .argmax(1)
-                            .reshape([batch_size, 1, 1])
-                            .repeat(2, num_atoms),
-                    )
-                    .reshape([batch_size, num_atoms]);
-                let loss = -target_probs * (prob.clamp_min(1e-14)).log();
-                loss
+                let quantile_values = quantile_values.gather(
+                    1,
+                    item.action
+                        .clone()
+                        .argmax(1)
+                        .reshape([batch_size, 1, 1])
+                        .repeat(2, num_quantile),
+                ); // [batch_size, 1, num_quantile]
+                let quantile_values = quantile_values.permute([0, 2, 1]); // [batch_size, num_quantile, 1]
+                let loss = HuberLossConfig::new(1.0)
+                    .init(&self.device)
+                    .forward_no_reduction(quantile_values.clone(), target_quantiles.clone());
+
+                let td_errors = (target_quantiles - quantile_values).inner();
+                let is_negative = td_errors.clone().lower(td_errors.zeros_like()).float();
+                let quantiles = Tensor::from_data(
+                    Data::new(quantiles, Shape::new([1, num_quantile, 1])).convert(),
+                    &self.device,
+                ); // [1, num_quantile, 1]
+                let quantile_weights = (quantiles - is_negative).abs();
+                let quantile_weights = Tensor::from_inner(quantile_weights);
+
+                (loss * quantile_weights)
+                    .mean_dim(2)
+                    .reshape([batch_size, num_quantile])
+                    .sum_dim(1)
             }
         };
         let weights = Tensor::from_data(
             Data::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert(),
             &self.device,
         );
-        let loss = loss.sum_dim(1) * weights;
+        let loss = loss * weights;
         let loss = loss.mean();
         let grads: <B as AutodiffBackend>::Gradients = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
@@ -351,7 +368,7 @@ where
 }
 
 impl<B, const D: usize, M, O, S> PrioritizedReplayAgent<DeepQNetworkState>
-    for CategoricalDeepQNetworkAgent<B, D, M, O, S>
+    for QuantileRegressionAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
     M: AutodiffModule<B> + Display + Estimator<B> + Distributional<B>,
@@ -359,130 +376,4 @@ where
     O: SimpleOptimizer<B::InnerBackend>,
     S: LrScheduler<B> + Clone,
 {
-}
-
-// https://github.com/Silvicek/distributional-dqn/blob/master/distdeepq/build_graph.py#L292-L317
-fn shift_and_projection<B: Backend>(
-    next_dists: Tensor<B, 3>, // [batch, num_class, num_atoms]
-    rewards: Tensor<B, 2>,    // [batch, num_class]
-    dones: Tensor<B, 2>,      // [batch, num_class]
-    batch_size: usize,
-    num_atoms: usize,
-    gamma: f32,
-    n_step: usize,
-    min_value: f32,
-    max_value: f32,
-) -> Tensor<B, 2> {
-    let device = next_dists.device();
-    let z = (0..num_atoms)
-        .map(|i| min_value + (max_value - min_value) * (i as f32) / (num_atoms as f32 - 1.0))
-        .collect::<Vec<_>>();
-    let z = Tensor::from_data(Data::new(z, Shape::new([1, num_atoms])).convert(), &device); // [1, num_atoms]
-    let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
-    let rewards = rewards.clone().mean_dim(1); // [batch, 1]
-    let dones = dones.clone().mean_dim(1); // [batch, 1]
-    let target = rewards + (dones.ones_like() - dones) * gamma.powi(n_step as i32) * z.clone(); // [batch, num_atoms]
-    let target = target.clamp(min_value, max_value);
-    let target_tile = target
-        .reshape([batch_size, 1, num_atoms]); // [batch_size, 1, num_atoms]
-    let z_tile = z // [1, num_atoms]
-        .reshape([1, num_atoms, 1]); // [1, num_atoms, 1]
-    let modify_coefficient = (target_tile - z_tile).abs() / dz; // [batch, num_atoms, num_atoms]
-    let modify_coefficient = (modify_coefficient.ones_like() - modify_coefficient).clamp(0.0, 1.0);
-
-    let target_probs = modify_coefficient.matmul(next_dists);
-    let target_probs = target_probs.reshape([batch_size, num_atoms as usize]);
-    target_probs
-}
-
-#[cfg(test)]
-mod tests {
-
-    use burn::{
-        backend::{libtorch::LibTorchDevice, LibTorch},
-        tensor::Tensor,
-    };
-
-    use crate::agent::categorical::shift_and_projection;
-
-    #[test]
-    fn test_shift_and_projection() {
-        // spec. is eq.7 in https://arxiv.org/pdf/1707.06887
-
-        type Backend = LibTorch;
-        let device = LibTorchDevice::Cpu;
-
-        for (name, num_class, num_atoms, gamma, max_value, min_value, n_step, reward) in vec![
-            ("base", 2, 5, 0.5f32, 5.0f32, 0.0f32, 1usize, 1.0f32),
-            ("num_class", 12, 4, 0.5f32, 5.0f32, 0.0f32, 1usize, 1.0f32),
-            ("num_atoms", 2, 51, 0.5f32, 5.0f32, 0.0f32, 1usize, 1.0f32),
-            ("gamma", 2, 5, 0.99f32, 5.0f32, 0.0f32, 1usize, 1.0f32),
-            ("max_value", 2, 5, 0.5f32, 10.0f32, 0.0f32, 1usize, 1.0f32),
-            ("min_value", 2, 5, 0.5f32, 5.0f32, -0.5f32, 1usize, 1.0f32),
-            ("n_step", 2, 5, 0.5f32, 5.0f32, 0.0f32, 3usize, 1.0f32),
-            ("reward", 2, 5, 0.5f32, 5.0f32, 0.0f32, 1usize, 0.0f32),
-        ] {
-            let batch_size = 1;
-            let next_dists: Tensor<Backend, 3> =
-                Tensor::ones([batch_size, num_atoms, 1], &device) / (num_atoms as f32);
-            let rewards = Tensor::ones([batch_size, num_class], &device) * reward;
-            let dones = Tensor::zeros([batch_size, num_class], &device);
-
-            // expected
-
-            let next_dist_scalar = 1.0 / (num_atoms as f32);
-
-            let mut expected = vec![0.0; num_atoms];
-
-            let z = (0..num_atoms)
-                .map(|i| {
-                    min_value + (max_value - min_value) * (i as f32) / (num_atoms as f32 - 1.0)
-                })
-                .collect::<Vec<_>>();
-            let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
-
-            for atom_index in 0..num_atoms {
-                let q_value = reward + gamma.powi(n_step as i32) * z[atom_index];
-                let q_value = q_value.clamp(min_value, max_value);
-                let q_value_index = (q_value - min_value) / dz;
-                let lower_index = q_value_index.floor() as usize;
-                let upper_index = q_value_index.ceil() as usize;
-
-                let lower_prob = 1.0 - (q_value_index - lower_index as f32);
-                let upper_prob = 1.0 - (upper_index as f32 - q_value_index);
-
-                if lower_index == upper_index {
-                    expected[lower_index] += 0.5 * next_dist_scalar;
-                    expected[upper_index] += 0.5 * next_dist_scalar;
-                } else {
-                    expected[lower_index] += lower_prob * next_dist_scalar;
-                    expected[upper_index] += upper_prob * next_dist_scalar;
-                }
-            }
-
-            let result = shift_and_projection(
-                next_dists, rewards, dones, batch_size, num_atoms, gamma, n_step, min_value,
-                max_value,
-            );
-
-            approx::assert_abs_diff_eq!(expected.iter().sum::<f32>(), 1.0f32, epsilon = 1e-6);
-            approx::assert_abs_diff_eq!(
-                result.clone().to_data().value.iter().sum::<f32>(),
-                1.0f32,
-                epsilon = 1e-6
-            );
-            assert_eq!(
-                result
-                    .to_data()
-                    .value
-                    .iter()
-                    .map(|x| format!("{}: {:.4}", name, x))
-                    .collect::<Vec<_>>(),
-                expected
-                    .iter()
-                    .map(|x| format!("{}: {:.4}", name, x))
-                    .collect::<Vec<_>>()
-            );
-        }
-    }
 }

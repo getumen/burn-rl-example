@@ -8,7 +8,10 @@ use burn::{
     optim::AdamConfig,
 };
 use burn_rl_example::{
-    agent::{categorical::CategoricalDeepQNetworkAgent, expectation::DeepQNetworkAgent},
+    agent::{
+        categorical::CategoricalDeepQNetworkAgent, expectation::DeepQNetworkAgent,
+        quantile::QuantileRegressionAgent,
+    },
     env::{
         gym_super_mario_bros::GymSuperMarioBrosEnv,
         gymnasium::{GymnasiumEnv1D, GymnasiumEnv3D},
@@ -47,6 +50,8 @@ struct Args {
     #[arg(long)]
     noisy: bool,
     #[arg(long)]
+    render: bool,
+    #[arg(long)]
     n_step: usize,
     #[arg(long)]
     bellman_gamma: f32,
@@ -56,6 +61,7 @@ struct Args {
 enum Distributional {
     Expectation,
     Categorical,
+    Quantile,
 }
 
 impl Distributional {
@@ -69,6 +75,7 @@ impl Distributional {
                     max_value: 250.0,
                 },
             },
+            Distributional::Quantile => OutputLayerConfig::QuantileRegression { quantiles: 51 },
         }
     }
 }
@@ -211,6 +218,50 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             }
         }
+        OutputLayerConfig::QuantileRegression { .. } => {
+            let mut agent = QuantileRegressionAgent::new(
+                model,
+                optimizer,
+                ConstantLr::new(0.00025),
+                env.observation_space().clone(),
+                env.action_space().clone(),
+                device,
+                1000,
+                args.n_step,
+                args.double_dqn,
+            );
+
+            if let Some(restore_path) = &args.restore_path {
+                agent.load(restore_path).with_context(|| "load agent")?;
+            }
+
+            if args.prioritized {
+                let mut memory = PrioritizedReplayMemory::new(
+                    2usize.pow(20),
+                    args.batch_size,
+                    args.n_step,
+                    0.6,
+                    args.bellman_gamma,
+                )?;
+
+                let trainer =
+                    PrioritizedReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+
+                trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
+            } else {
+                let mut memory = UniformReplayMemory::new(
+                    2usize.pow(20),
+                    args.batch_size,
+                    args.n_step,
+                    args.bellman_gamma,
+                )?;
+
+                let trainer =
+                    UniformReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+
+                trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
+            }
+        }
     }
 
     Ok(())
@@ -237,17 +288,17 @@ fn main() -> anyhow::Result<()> {
         let args = Args::parse();
 
         if super_mario_env.contains(&args.env_name.as_str()) {
-            let mut env = GymSuperMarioBrosEnv::new(py, &args.env_name)
+            let mut env = GymSuperMarioBrosEnv::new(py, &args.env_name, args.render)
                 .with_context(|| "create gymnasium env")?;
             run(&mut env, args)?;
         } else if env_1d.contains(&args.env_name.as_str()) {
-            let mut env =
-                GymnasiumEnv1D::new(py, &args.env_name).with_context(|| "create gymnasium env")?;
+            let mut env = GymnasiumEnv1D::new(py, &args.env_name, args.render)
+                .with_context(|| "create gymnasium env")?;
 
             run(&mut env, args)?;
         } else if env_3d.contains(&args.env_name.as_str()) {
-            let mut env =
-                GymnasiumEnv3D::new(py, &args.env_name).with_context(|| "create gymnasium env")?;
+            let mut env = GymnasiumEnv3D::new(py, &args.env_name, args.render)
+                .with_context(|| "create gymnasium env")?;
             run(&mut env, args)?;
         }
         Ok(())
