@@ -240,8 +240,8 @@ impl<B: Backend> QuantileRegressionLayer<B> {
     pub fn forward_distribution(&self, x: Tensor<B, 2>) -> Tensor<B, 3> {
         let shape = x.shape().dims;
         let x = self.value_layer.forward(x);
-        let x = x.reshape([shape[0], self.action_num, self.quantiles]);
-        x
+        
+        x.reshape([shape[0], self.action_num, self.quantiles])
     }
 }
 

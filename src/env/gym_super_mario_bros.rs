@@ -110,13 +110,14 @@ mod tests {
 
     #[test]
     fn test_gym_env_discrete() -> anyhow::Result<()> {
-        for (env_name, action_space, observation_space) in [(
+        {
+            let (env_name, action_space, observation_space) = (
             "SuperMarioBros-v3",
             ActionSpace::Discrete(5),
             ObservationSpace::Box {
                 shape: [1, 3, 240, 256],
             },
-        )] {
+        );
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
                 let mut env = GymSuperMarioBrosEnv::new(py, env_name, true)?;
                 assert_eq!(env.action_space(), &action_space);

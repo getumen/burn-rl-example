@@ -93,25 +93,25 @@ where
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
     ) -> Vec<f32> {
-        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
-        let mut shape = self.observation_space.shape().clone();
+        let mut shape = *self.observation_space.shape();
         shape[0] = experiences.len();
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
-        let q_value = model.predict(observation.reshape(shape.clone()));
+        let q_value = model.predict(observation.reshape(shape));
         let next_target_q_value = self
             .teacher_model
             .valid()
-            .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+            .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
                     let next_q_value = model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+                        .predict(item.next_observation.clone().inner().reshape(shape));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
@@ -151,9 +151,9 @@ where
     S: LrScheduler<B> + Clone,
 {
     fn policy(&self, observation: &[f32]) -> Action {
-        let shape = self.observation_space.shape().clone();
+        let shape = *self.observation_space.shape();
         let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new(shape.clone())).convert(),
+            Data::new(observation.to_vec(), Shape::new(shape)).convert(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
@@ -173,27 +173,27 @@ where
         experiences: &[Experience<DeepQNetworkState>],
         weights: &[f32],
     ) -> anyhow::Result<()> {
-        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let batch_size = experiences.len();
-        let mut shape = self.observation_space.shape().clone();
+        let mut shape = *self.observation_space.shape();
         shape[0] = batch_size;
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
-        let q_value = model.predict(observation.reshape(shape.clone()));
+        let q_value = model.predict(observation.reshape(shape));
         let next_target_q_value = self
             .teacher_model
             .valid()
-            .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+            .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value: Tensor<B, 2> =
             Tensor::from_inner(next_target_q_value).to_device(&self.device);
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
                     let next_q_value =
-                        model.predict(item.next_observation.clone().reshape(shape.clone()));
+                        model.predict(item.next_observation.clone().reshape(shape));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)

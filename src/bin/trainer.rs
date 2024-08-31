@@ -68,12 +68,10 @@ impl Distributional {
     fn to_output_layer_config(&self, env_name: &str) -> OutputLayerConfig {
         match self {
             Distributional::Expectation => OutputLayerConfig::Expectation,
-            Distributional::Categorical => match env_name {
-                _ => OutputLayerConfig::CategoricalDistribution {
-                    atoms: 51,
-                    min_value: -250.0,
-                    max_value: 250.0,
-                },
+            Distributional::Categorical => OutputLayerConfig::CategoricalDistribution {
+                atoms: 51,
+                min_value: -250.0,
+                max_value: 250.0,
             },
             Distributional::Quantile => OutputLayerConfig::QuantileRegression { quantiles: 51 },
         }
@@ -130,7 +128,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 optimizer,
                 ConstantLr::new(0.00025),
                 env.observation_space().clone(),
-                env.action_space().clone(),
+                *env.action_space(),
                 device,
                 1000,
                 args.n_step,
@@ -178,7 +176,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 optimizer,
                 ConstantLr::new(0.00025),
                 env.observation_space().clone(),
-                env.action_space().clone(),
+                *env.action_space(),
                 device,
                 1000,
                 args.n_step,
@@ -224,7 +222,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 optimizer,
                 ConstantLr::new(0.00025),
                 env.observation_space().clone(),
-                env.action_space().clone(),
+                *env.action_space(),
                 device,
                 1000,
                 args.n_step,
@@ -269,21 +267,17 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
 
 fn main() -> anyhow::Result<()> {
     Python::with_gil(|py| -> anyhow::Result<()> {
-        let env_1d = vec![
-            "CartPole-v1",
+        let env_1d = ["CartPole-v1",
             "MountainCar-v0",
             "Acrobot-v1",
             "Pendulum-v0",
-            "LunarLander-v2",
-        ];
-        let env_3d = vec!["Breakout-v4"];
+            "LunarLander-v2"];
+        let env_3d = ["Breakout-v4"];
 
-        let super_mario_env = vec![
-            "SuperMarioBros-v0",
+        let super_mario_env = ["SuperMarioBros-v0",
             "SuperMarioBros-v1",
             "SuperMarioBros-v2",
-            "SuperMarioBros-v3",
-        ];
+            "SuperMarioBros-v3"];
 
         let args = Args::parse();
 

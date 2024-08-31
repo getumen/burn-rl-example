@@ -93,25 +93,25 @@ where
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
     ) -> Vec<f32> {
-        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
-        let mut shape = self.observation_space.shape().clone();
+        let mut shape = *self.observation_space.shape();
         shape[0] = experiences.len();
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
-        let q_value = model.predict(observation.reshape(shape.clone()));
+        let q_value = model.predict(observation.reshape(shape));
         let next_target_q_value = self
             .teacher_model
             .valid()
-            .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+            .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
                     let next_q_value = model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+                        .predict(item.next_observation.clone().inner().reshape(shape));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
@@ -151,9 +151,9 @@ where
     S: LrScheduler<B> + Clone,
 {
     fn policy(&self, observation: &[f32]) -> Action {
-        let shape = self.observation_space.shape().clone();
+        let shape = *self.observation_space.shape();
         let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new(shape.clone())).convert(),
+            Data::new(observation.to_vec(), Shape::new(shape)).convert(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
@@ -173,10 +173,10 @@ where
         experiences: &[Experience<DeepQNetworkState>],
         weights: &[f32],
     ) -> anyhow::Result<()> {
-        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let batch_size = experiences.len();
-        let mut shape = self.observation_space.shape().clone();
+        let mut shape = *self.observation_space.shape();
         shape[0] = batch_size;
 
         let model = self.model.clone();
@@ -184,7 +184,7 @@ where
         let next_quantiles = self
             .teacher_model
             .valid()
-            .get_distribution(item.next_observation.clone().inner().reshape(shape.clone()));
+            .get_distribution(item.next_observation.clone().inner().reshape(shape));
 
         let quantile_shape = next_quantiles.shape().dims;
         let num_quantile = quantile_shape[2];
@@ -199,23 +199,23 @@ where
                 let next_actions = if self.double_dqn {
                     let next_q_value = model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
-                    let next_actions = next_q_value
+                        .predict(item.next_observation.clone().inner().reshape(shape));
+                    
+
+                    next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_quantile);
-
-                    next_actions
+                        .repeat(2, num_quantile)
                 } else {
                     let next_q_value = self
                         .teacher_model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
-                    let next_actions = next_q_value
+                        .predict(item.next_observation.clone().inner().reshape(shape));
+                    
+                    next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_quantile);
-                    next_actions
+                        .repeat(2, num_quantile)
                 };
                 let next_quantiles = next_quantiles.clone().gather(1, next_actions).reshape([
                     batch_size,
@@ -243,7 +243,7 @@ where
 
                 let quantile_values = self
                     .model
-                    .get_distribution(item.observation.clone().reshape(shape.clone()));
+                    .get_distribution(item.observation.clone().reshape(shape));
                 let quantile_values = quantile_values.gather(
                     1,
                     item.action

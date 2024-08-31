@@ -111,8 +111,10 @@ impl PrioritizedReplayTrainer {
 
                 memory.push(experience)?;
 
-                if epi > 0 {
-                    let (indexes, batch, weights) = memory.sample()?;
+                if epi == 0 {
+                    continue;
+                }
+                if let Ok((indexes, batch, weights)) = memory.sample() {
                     agent.update(self.gamma, &batch, &weights)?;
                     let td_errors = agent.temporaral_difference_error(self.gamma, &batch);
                     let (indexes, td_errors) = indexes
@@ -188,7 +190,6 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
                         let priorities: Vec<(usize, f32)> = {
                             let priorities = priorities_clone.read();
                             (0..batch_size)
-                                .into_iter()
                                 .map(|_| priorities.sample())
                                 .collect()
                         };
@@ -258,7 +259,10 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
     }
 
     pub fn sample(&self) -> anyhow::Result<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)> {
-        Ok(self.batch_channel.recv().with_context(|| "recv batch")?)
+        self
+            .batch_channel
+            .try_recv()
+            .with_context(|| "recv batch")
     }
 }
 
