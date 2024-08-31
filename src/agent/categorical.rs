@@ -383,11 +383,11 @@ fn shift_and_projection<B: Backend>(
     let dones = dones.clone().mean_dim(1); // [batch, 1]
     let target = rewards + (dones.ones_like() - dones) * gamma.powi(n_step as i32) * z.clone(); // [batch, num_atoms]
     let target = target.clamp(min_value, max_value);
-    let target_tile = target
+    let target = target
         .reshape([batch_size, 1, num_atoms]); // [batch_size, 1, num_atoms]
-    let z_tile = z // [1, num_atoms]
+    let z = z // [1, num_atoms]
         .reshape([1, num_atoms, 1]); // [1, num_atoms, 1]
-    let modify_coefficient = (target_tile - z_tile).abs() / dz; // [batch, num_atoms, num_atoms]
+    let modify_coefficient = (target - z).abs() / dz; // [batch, num_atoms, num_atoms]
     let modify_coefficient = (modify_coefficient.ones_like() - modify_coefficient).clamp(0.0, 1.0);
 
     let target_probs = modify_coefficient.matmul(next_dists);
