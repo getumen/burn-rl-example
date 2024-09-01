@@ -74,7 +74,6 @@ impl<B: Backend> NoisyLinear<B> {
         let d_input = self.weight_mu.shape().dims[0];
         let d_output = self.weight_mu.shape().dims[1];
         let epsilon_in = (0..d_input)
-            .into_iter()
             .map(|_| normal.sample(&mut rng))
             .map(|x: f32| x.signum() * x.abs().sqrt())
             .collect();
@@ -83,7 +82,6 @@ impl<B: Backend> NoisyLinear<B> {
             &device,
         );
         let epsilon_out = (0..self.weight_mu.shape().dims[1])
-            .into_iter()
             .map(|_| normal.sample(&mut rng))
             .map(|x: f32| x.signum() * x.abs().sqrt())
             .collect();

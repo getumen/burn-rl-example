@@ -109,8 +109,10 @@ impl UniformReplayTrainer {
                 };
                 memory.push(experience)?;
 
-                if epi > 0 {
-                    let batch = memory.sample()?;
+                if epi == 0 {
+                    continue;
+                }
+                if let Ok(batch) = memory.sample() {
                     let weights = vec![1.0 / batch.len() as f32; batch.len()];
                     agent.update(self.gamma, &batch, &weights)?;
                 }
@@ -222,6 +224,9 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
     }
 
     fn sample(&self) -> anyhow::Result<Vec<Experience<S>>> {
-        Ok(self.batch_channel.recv().with_context(|| "recv batch")?)
+        self
+            .batch_channel
+            .try_recv()
+            .with_context(|| "recv batch")
     }
 }

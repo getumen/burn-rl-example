@@ -100,25 +100,25 @@ where
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
     ) -> Vec<f32> {
-        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
-        let mut shape = self.observation_space.shape().clone();
+        let mut shape = *self.observation_space.shape();
         shape[0] = experiences.len();
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
         let observation = item.observation.clone();
-        let q_value = model.predict(observation.reshape(shape.clone()));
+        let q_value = model.predict(observation.reshape(shape));
         let next_target_q_value = self
             .teacher_model
             .valid()
-            .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+            .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
                     let next_q_value = model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
+                        .predict(item.next_observation.clone().inner().reshape(shape));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
@@ -159,9 +159,9 @@ where
     S: LrScheduler<B> + Clone,
 {
     fn policy(&self, observation: &[f32]) -> Action {
-        let shape = self.observation_space.shape().clone();
+        let shape = *self.observation_space.shape();
         let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new(shape.clone())).convert(),
+            Data::new(observation.to_vec(), Shape::new(shape)).convert(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
@@ -181,10 +181,10 @@ where
         experiences: &[Experience<DeepQNetworkState>],
         weights: &[f32],
     ) -> anyhow::Result<()> {
-        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space.clone());
+        let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let batch_size = experiences.len();
-        let mut shape = self.observation_space.shape().clone();
+        let mut shape = *self.observation_space.shape();
         shape[0] = batch_size;
 
         let model = self.model.clone();
@@ -192,7 +192,7 @@ where
         let next_probs = self
             .teacher_model
             .valid()
-            .get_distribution(item.next_observation.clone().inner().reshape(shape.clone()));
+            .get_distribution(item.next_observation.clone().inner().reshape(shape));
 
         let prob_shape = next_probs.shape().dims;
         let num_atoms = prob_shape[2];
@@ -202,23 +202,23 @@ where
                 let next_actions = if self.double_dqn {
                     let next_q_value = model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
-                    let next_actions = next_q_value
+                        .predict(item.next_observation.clone().inner().reshape(shape));
+                    
+
+                    next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_atoms);
-
-                    next_actions
+                        .repeat(2, num_atoms)
                 } else {
                     let next_q_value = self
                         .teacher_model
                         .valid()
-                        .predict(item.next_observation.clone().inner().reshape(shape.clone()));
-                    let next_actions = next_q_value
+                        .predict(item.next_observation.clone().inner().reshape(shape));
+                    
+                    next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_atoms);
-                    next_actions
+                        .repeat(2, num_atoms)
                 };
                 let next_dists = next_probs
                     .clone()
@@ -240,7 +240,7 @@ where
 
                 let prob = self
                     .model
-                    .get_distribution(item.observation.clone().reshape(shape.clone()));
+                    .get_distribution(item.observation.clone().reshape(shape));
                 let prob = prob
                     .gather(
                         1,
@@ -251,8 +251,8 @@ where
                             .repeat(2, num_atoms),
                     )
                     .reshape([batch_size, num_atoms]);
-                let loss = -target_probs * (prob.clamp_min(1e-14)).log();
-                loss
+                
+                -target_probs * (prob.clamp_min(1e-14)).log()
             }
         };
         let weights = Tensor::from_data(
@@ -377,27 +377,21 @@ fn shift_and_projection<B: Backend>(
     let z = (0..num_atoms)
         .map(|i| min_value + (max_value - min_value) * (i as f32) / (num_atoms as f32 - 1.0))
         .collect::<Vec<_>>();
-    let z = Tensor::from_data(Data::new(z, Shape::new([1, num_atoms])).convert(), &device);
+    let z = Tensor::from_data(Data::new(z, Shape::new([1, num_atoms])).convert(), &device); // [1, num_atoms]
     let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
-    let z_tile = z.repeat(0, batch_size);
-    let revenue_tile = rewards.clone().mean_dim(1).repeat(1, num_atoms);
-    let done_tile = dones.clone().mean_dim(1).repeat(1, num_atoms);
-    let target = revenue_tile
-        + (done_tile.ones_like() - done_tile) * gamma.powi(n_step as i32) * z_tile.clone();
+    let rewards = rewards.clone().mean_dim(1); // [batch, 1]
+    let dones = dones.clone().mean_dim(1); // [batch, 1]
+    let target = rewards + (dones.ones_like() - dones) * gamma.powi(n_step as i32) * z.clone(); // [batch, num_atoms]
     let target = target.clamp(min_value, max_value);
-    let target_tile = target
-        .repeat(1, num_atoms as usize)
-        .reshape([batch_size, num_atoms, num_atoms]);
-    let z_double_tile = z_tile
-        .repeat(1, num_atoms)
-        .reshape([batch_size, num_atoms, num_atoms]);
-    let z_double_tile = z_double_tile.transpose();
-    let modify_coefficient = (target_tile - z_double_tile).abs() / dz;
+    let target = target.reshape([batch_size, 1, num_atoms]); // [batch_size, 1, num_atoms]
+    let z = z // [1, num_atoms]
+        .reshape([1, num_atoms, 1]); // [1, num_atoms, 1]
+    let modify_coefficient = (target - z).abs() / dz; // [batch, num_atoms, num_atoms]
     let modify_coefficient = (modify_coefficient.ones_like() - modify_coefficient).clamp(0.0, 1.0);
 
     let target_probs = modify_coefficient.matmul(next_dists);
-    let target_probs = target_probs.reshape([batch_size, num_atoms as usize]);
-    target_probs
+    
+    target_probs.reshape([batch_size, num_atoms])
 }
 
 #[cfg(test)]

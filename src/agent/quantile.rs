@@ -1,27 +1,27 @@
 use std::{fmt::Display, fs::File, path::Path};
 
-use anyhow::Context;
+use anyhow::Context as _;
 use burn::{
-    data::dataloader::batcher::Batcher,
+    data::dataloader::batcher::Batcher as _,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
     nn::loss::HuberLossConfig,
     optim::{
         adaptor::OptimizerAdaptor,
         record::{AdaptorRecord, AdaptorRecordItem},
-        GradientsParams, Optimizer, SimpleOptimizer,
+        GradientsParams, Optimizer as _, SimpleOptimizer,
     },
-    record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder},
-    tensor::{backend::AutodiffBackend, Data, ElementConversion, Shape, Tensor},
+    record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder as _},
+    tensor::{backend::AutodiffBackend, Data, ElementConversion as _, Shape, Tensor},
 };
 
 use crate::{
-    batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Estimator,
-    Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
+    batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Distributional,
+    Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
 
 #[derive(Clone)]
-pub struct DeepQNetworkAgent<
+pub struct QuantileRegressionAgent<
     B: AutodiffBackend,
     const D: usize,
     M: AutodiffModule<B>,
@@ -45,10 +45,10 @@ pub struct DeepQNetworkAgent<
 impl<
         B: AutodiffBackend,
         const D: usize,
-        M: AutodiffModule<B> + Estimator<B>,
+        M: AutodiffModule<B> + Estimator<B> + Distributional<B>,
         O: SimpleOptimizer<B::InnerBackend>,
         S: LrScheduler<B>,
-    > DeepQNetworkAgent<B, D, M, O, S>
+    > QuantileRegressionAgent<B, D, M, O, S>
 {
     pub fn new(
         model: M,
@@ -80,11 +80,11 @@ impl<
 }
 
 impl<B, const D: usize, M, O, S> PrioritizedReplay<DeepQNetworkState>
-    for DeepQNetworkAgent<B, D, M, O, S>
+    for QuantileRegressionAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
-    M: AutodiffModule<B> + Display + Estimator<B>,
-    M::InnerModule: Estimator<B::InnerBackend>,
+    M: AutodiffModule<B> + Display + Estimator<B> + Distributional<B>,
+    M::InnerModule: Estimator<B::InnerBackend> + Distributional<B::InnerBackend>,
     O: SimpleOptimizer<B::InnerBackend>,
     S: LrScheduler<B> + Clone,
 {
@@ -142,11 +142,11 @@ where
     }
 }
 
-impl<B, const D: usize, M, O, S> Agent<DeepQNetworkState> for DeepQNetworkAgent<B, D, M, O, S>
+impl<B, const D: usize, M, O, S> Agent<DeepQNetworkState> for QuantileRegressionAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
-    M: AutodiffModule<B> + Display + Estimator<B>,
-    M::InnerModule: Estimator<B::InnerBackend>,
+    M: AutodiffModule<B> + Display + Estimator<B> + Distributional<B>,
+    M::InnerModule: Estimator<B::InnerBackend> + Distributional<B::InnerBackend>,
     O: SimpleOptimizer<B::InnerBackend>,
     S: LrScheduler<B> + Clone,
 {
@@ -181,44 +181,102 @@ where
 
         let model = self.model.clone();
         let item = batcher.batch(experiences.to_vec());
-        let observation = item.observation.clone();
-        let q_value = model.predict(observation.reshape(shape));
-        let next_target_q_value = self
+        let next_quantiles = self
             .teacher_model
             .valid()
-            .predict(item.next_observation.clone().inner().reshape(shape));
-        let next_target_q_value: Tensor<B, 2> =
-            Tensor::from_inner(next_target_q_value).to_device(&self.device);
-        let next_target_q_value = match self.action_space {
-            ActionSpace::Discrete(num_class) => {
-                if self.double_dqn {
-                    let next_q_value =
-                        model.predict(item.next_observation.clone().reshape(shape));
-                    let next_actions = next_q_value.argmax(1);
-                    next_target_q_value
-                        .gather(1, next_actions)
-                        .repeat(1, num_class as usize)
+            .get_distribution(item.next_observation.clone().inner().reshape(shape));
+
+        let quantile_shape = next_quantiles.shape().dims;
+        let num_quantile = quantile_shape[2];
+
+        let mut quantiles = Vec::new();
+        for i in 0..num_quantile {
+            quantiles.push((i as f32 + 0.5) / num_quantile as f32);
+        }
+
+        let loss = match self.action_space {
+            ActionSpace::Discrete(..) => {
+                let next_actions = if self.double_dqn {
+                    let next_q_value = model
+                        .valid()
+                        .predict(item.next_observation.clone().inner().reshape(shape));
+                    
+
+                    next_q_value
+                        .argmax(1)
+                        .reshape([batch_size, 1, 1])
+                        .repeat(2, num_quantile)
                 } else {
-                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
-                }
+                    let next_q_value = self
+                        .teacher_model
+                        .valid()
+                        .predict(item.next_observation.clone().inner().reshape(shape));
+                    
+                    next_q_value
+                        .argmax(1)
+                        .reshape([batch_size, 1, 1])
+                        .repeat(2, num_quantile)
+                };
+                let next_quantiles = next_quantiles.clone().gather(1, next_actions).reshape([
+                    batch_size,
+                    1,
+                    num_quantile,
+                ]);
+
+                let reward = item
+                    .reward
+                    .clone()
+                    .mean_dim(1)
+                    .inner()
+                    .reshape([batch_size, 1, 1]);
+                let done = item
+                    .done
+                    .clone()
+                    .mean_dim(1)
+                    .inner()
+                    .reshape([batch_size, 1, 1]);
+
+                let target_quantiles = reward
+                    + next_quantiles.mul_scalar(gamma.powi(self.n_step as i32))
+                        * (done.ones_like() - done); // [batch_size, 1, num_quantile]
+                let target_quantiles = Tensor::from_inner(target_quantiles);
+
+                let quantile_values = self
+                    .model
+                    .get_distribution(item.observation.clone().reshape(shape));
+                let quantile_values = quantile_values.gather(
+                    1,
+                    item.action
+                        .clone()
+                        .argmax(1)
+                        .reshape([batch_size, 1, 1])
+                        .repeat(2, num_quantile),
+                ); // [batch_size, 1, num_quantile]
+                let quantile_values = quantile_values.permute([0, 2, 1]); // [batch_size, num_quantile, 1]
+                let loss = HuberLossConfig::new(1.0)
+                    .init(&self.device)
+                    .forward_no_reduction(quantile_values.clone(), target_quantiles.clone());
+
+                let td_errors = (target_quantiles - quantile_values).inner();
+                let is_negative = td_errors.clone().lower(td_errors.zeros_like()).float();
+                let quantiles = Tensor::from_data(
+                    Data::new(quantiles, Shape::new([1, num_quantile, 1])).convert(),
+                    &self.device,
+                ); // [1, num_quantile, 1]
+                let quantile_weights = (quantiles - is_negative).abs();
+                let quantile_weights = Tensor::from_inner(quantile_weights);
+
+                (loss * quantile_weights)
+                    .mean_dim(2)
+                    .reshape([batch_size, num_quantile])
+                    .sum_dim(1)
             }
         };
-        let targets = q_value.clone().inner()
-            * (item.action.ones_like().inner() - item.action.clone().inner())
-            + ((next_target_q_value.clone().inner()
-                * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.n_step as i32))
-                + item.reward.clone().inner())
-                * item.action.clone().inner();
-        let targets = Tensor::from_inner(targets);
-        let loss = HuberLossConfig::new(1.0)
-            .init(&self.device)
-            .forward_no_reduction(q_value, targets);
         let weights = Tensor::from_data(
             Data::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert(),
             &self.device,
         );
-        let loss = loss.sum_dim(1) * weights;
+        let loss = loss * weights;
         let loss = loss.mean();
         let grads: <B as AutodiffBackend>::Gradients = loss.backward();
         let grads = GradientsParams::from_grads(grads, &model);
@@ -310,11 +368,11 @@ where
 }
 
 impl<B, const D: usize, M, O, S> PrioritizedReplayAgent<DeepQNetworkState>
-    for DeepQNetworkAgent<B, D, M, O, S>
+    for QuantileRegressionAgent<B, D, M, O, S>
 where
     B: AutodiffBackend,
-    M: AutodiffModule<B> + Display + Estimator<B>,
-    M::InnerModule: Estimator<B::InnerBackend>,
+    M: AutodiffModule<B> + Display + Estimator<B> + Distributional<B>,
+    M::InnerModule: Estimator<B::InnerBackend> + Distributional<B::InnerBackend>,
     O: SimpleOptimizer<B::InnerBackend>,
     S: LrScheduler<B> + Clone,
 {
