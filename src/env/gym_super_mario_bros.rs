@@ -11,6 +11,7 @@ pub struct GymSuperMarioBrosEnv<'py> {
     env: Bound<'py, PyAny>,
     action_space: ActionSpace,
     observation_space: ObservationSpace<4>,
+    render: bool,
 }
 
 impl<'py> GymSuperMarioBrosEnv<'py> {
@@ -27,11 +28,8 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
         let movement = gym_actions.getattr("COMPLEX_MOVEMENT")?;
         let make_func = gym.getattr("make")?;
 
-        let mode = [("render_mode", "rgb_array")].into_py_dict_bound(py);
-        let kwargs = if render { None } else { Some(&mode) };
-
         let env = make_func
-            .call((env_name,), kwargs)
+            .call((env_name,), None)
             .with_context(|| "fail to call make function")?;
         let env = joypad_space.call((env, movement), None)?;
 
@@ -62,6 +60,7 @@ impl<'py> GymSuperMarioBrosEnv<'py> {
             env,
             action_space,
             observation_space,
+            render,
         })
     }
 
@@ -97,7 +96,13 @@ impl<'py> Env<4> for GymSuperMarioBrosEnv<'py> {
     }
 
     fn render(&self) -> anyhow::Result<()> {
-        self.env.call_method("render", (), None)?;
+        let mode = if self.render {
+            [("mode", "human")].into_py_dict_bound(self.py)
+        } else {
+            [("mode", "rgb_array")].into_py_dict_bound(self.py)
+        };
+
+        self.env.call_method("render", (), Some(&mode))?;
         Ok(())
     }
 }
