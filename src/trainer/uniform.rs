@@ -224,9 +224,6 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
     }
 
     fn sample(&self) -> anyhow::Result<Vec<Experience<S>>> {
-        self
-            .batch_channel
-            .try_recv()
-            .with_context(|| "recv batch")
+        self.batch_channel.try_recv().with_context(|| "recv batch")
     }
 }

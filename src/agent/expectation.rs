@@ -12,7 +12,7 @@ use burn::{
         GradientsParams, Optimizer, SimpleOptimizer,
     },
     record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder},
-    tensor::{backend::AutodiffBackend, Data, ElementConversion, Shape, Tensor},
+    tensor::{backend::AutodiffBackend, ElementConversion, Shape, Tensor, TensorData},
 };
 
 use crate::{
@@ -92,7 +92,7 @@ where
         &self,
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
-    ) -> Vec<f32> {
+    ) -> anyhow::Result< Vec<f32>> {
         let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let mut shape = *self.observation_space.shape();
@@ -115,9 +115,9 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(1, num_class as usize)
+                        .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
+                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -133,12 +133,8 @@ where
         let td: Vec<f32> = (q_value.inner() - targets)
             .sum_dim(1)
             .into_data()
-            .value
-            .iter()
-            .map(|x| x.elem::<f32>())
-            .map(|x| x.abs())
-            .collect();
-        td
+            .to_vec().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        Ok(td)
     }
 }
 
@@ -152,12 +148,12 @@ where
 {
     fn policy(&self, observation: &[f32]) -> Action {
         let shape = *self.observation_space.shape();
-        let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new(shape)).convert(),
+        let feature: Tensor<<B as AutodiffBackend>::InnerBackend, D> = Tensor::from_data(
+            TensorData::new(observation.to_vec(), Shape::new(shape)).convert::<B::FloatElem>(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
-        println!("score: {:?}", scores.to_data().value);
+        println!("score: {:?}", scores.to_data().to_vec::<f32>());
         match self.action_space {
             ActionSpace::Discrete(..) => {
                 let scores = scores.argmax(1);
@@ -192,14 +188,13 @@ where
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
                 if self.double_dqn {
-                    let next_q_value =
-                        model.predict(item.next_observation.clone().reshape(shape));
+                    let next_q_value = model.predict(item.next_observation.clone().reshape(shape));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(1, num_class as usize)
+                        .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
+                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -212,10 +207,10 @@ where
                 * item.action.clone().inner();
         let targets = Tensor::from_inner(targets);
         let loss = HuberLossConfig::new(1.0)
-            .init(&self.device)
+            .init()
             .forward_no_reduction(q_value, targets);
         let weights = Tensor::from_data(
-            Data::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert(),
+            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert::<B::FloatElem>(),
             &self.device,
         );
         let loss = loss.sum_dim(1) * weights;

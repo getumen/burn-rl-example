@@ -16,7 +16,7 @@ use burn::{
     },
     prelude::Backend,
     record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder},
-    tensor::{backend::AutodiffBackend, Data, ElementConversion, Shape, Tensor},
+    tensor::{backend::AutodiffBackend, ElementConversion, Shape, Tensor, TensorData},
 };
 
 #[derive(Clone)]
@@ -99,7 +99,7 @@ where
         &self,
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
-    ) -> Vec<f32> {
+    ) -> anyhow::Result<Vec<f32>> {
         let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let mut shape = *self.observation_space.shape();
@@ -122,9 +122,9 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(1, num_class as usize)
+                        .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
+                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -140,12 +140,8 @@ where
         let td: Vec<f32> = (q_value.inner() - targets)
             .sum_dim(1)
             .into_data()
-            .value
-            .iter()
-            .map(|x| x.elem::<f32>())
-            .map(|x| x.abs())
-            .collect();
-        td
+            .to_vec().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        Ok(td)
     }
 }
 
@@ -160,12 +156,12 @@ where
 {
     fn policy(&self, observation: &[f32]) -> Action {
         let shape = *self.observation_space.shape();
-        let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new(shape)).convert(),
+        let feature: Tensor<<B as AutodiffBackend>::InnerBackend, D> = Tensor::from_data(
+            TensorData::new(observation.to_vec(), Shape::new(shape)).convert::<B::FloatElem>(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
-        println!("score: {:?}", scores.to_data().value);
+        println!("score: {:?}", scores.to_data().to_vec::<f32>());
         match self.action_space {
             ActionSpace::Discrete(..) => {
                 let scores = scores.argmax(1);
@@ -203,22 +199,21 @@ where
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
-                    
 
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_atoms)
+                        .repeat(&[1,1, num_atoms])
                 } else {
                     let next_q_value = self
                         .teacher_model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
-                    
+
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_atoms)
+                        .repeat(&[1,1, num_atoms])
                 };
                 let next_dists = next_probs
                     .clone()
@@ -248,15 +243,15 @@ where
                             .clone()
                             .argmax(1)
                             .reshape([batch_size, 1, 1])
-                            .repeat(2, num_atoms),
+                            .repeat(&[1,1, num_atoms]),
                     )
                     .reshape([batch_size, num_atoms]);
-                
+
                 -target_probs * (prob.clamp_min(1e-14)).log()
             }
         };
         let weights = Tensor::from_data(
-            Data::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert(),
+            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert::<B::FloatElem>(),
             &self.device,
         );
         let loss = loss.sum_dim(1) * weights;
@@ -377,7 +372,7 @@ fn shift_and_projection<B: Backend>(
     let z = (0..num_atoms)
         .map(|i| min_value + (max_value - min_value) * (i as f32) / (num_atoms as f32 - 1.0))
         .collect::<Vec<_>>();
-    let z = Tensor::from_data(Data::new(z, Shape::new([1, num_atoms])).convert(), &device); // [1, num_atoms]
+    let z = Tensor::from_data(TensorData::new(z, Shape::new([1, num_atoms])).convert::<B::FloatElem>(), &device); // [1, num_atoms]
     let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
     let rewards = rewards.clone().mean_dim(1); // [batch, 1]
     let dones = dones.clone().mean_dim(1); // [batch, 1]
@@ -390,7 +385,7 @@ fn shift_and_projection<B: Backend>(
     let modify_coefficient = (modify_coefficient.ones_like() - modify_coefficient).clamp(0.0, 1.0);
 
     let target_probs = modify_coefficient.matmul(next_dists);
-    
+
     target_probs.reshape([batch_size, num_atoms])
 }
 
@@ -466,15 +461,15 @@ mod tests {
 
             approx::assert_abs_diff_eq!(expected.iter().sum::<f32>(), 1.0f32, epsilon = 1e-6);
             approx::assert_abs_diff_eq!(
-                result.clone().to_data().value.iter().sum::<f32>(),
+                result.clone().to_data().to_vec::<f32>().unwrap().into_iter().sum::<f32>(),
                 1.0f32,
                 epsilon = 1e-6
             );
             assert_eq!(
                 result
                     .to_data()
-                    .value
-                    .iter()
+                    .to_vec::<f32>().unwrap()
+                    .into_iter()
                     .map(|x| format!("{}: {:.4}", name, x))
                     .collect::<Vec<_>>(),
                 expected

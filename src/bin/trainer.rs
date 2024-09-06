@@ -4,7 +4,7 @@ use anyhow::Context;
 use burn::{
     backend::{libtorch::LibTorchDevice, Autodiff, LibTorch},
     grad_clipping::GradientClippingConfig,
-    lr_scheduler::constant::ConstantLr,
+    lr_scheduler::{constant::ConstantLr, exponential::ExponentialLrSchedulerConfig},
     optim::AdamConfig,
 };
 use burn_rl_example::{
@@ -126,7 +126,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
             let mut agent = DeepQNetworkAgent::new(
                 model,
                 optimizer,
-                ConstantLr::new(0.00025),
+                ExponentialLrSchedulerConfig::new(0.001, 0.999).init(),
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
@@ -267,17 +267,21 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
 
 fn main() -> anyhow::Result<()> {
     Python::with_gil(|py| -> anyhow::Result<()> {
-        let env_1d = ["CartPole-v1",
+        let env_1d = [
+            "CartPole-v1",
             "MountainCar-v0",
             "Acrobot-v1",
             "Pendulum-v0",
-            "LunarLander-v2"];
+            "LunarLander-v2",
+        ];
         let env_3d = ["Breakout-v4"];
 
-        let super_mario_env = ["SuperMarioBros-v0",
+        let super_mario_env = [
+            "SuperMarioBros-v0",
             "SuperMarioBros-v1",
             "SuperMarioBros-v2",
-            "SuperMarioBros-v3"];
+            "SuperMarioBros-v3",
+        ];
 
         let args = Args::parse();
 

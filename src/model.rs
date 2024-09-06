@@ -9,7 +9,7 @@ use burn::{
         Linear, LinearConfig, Relu,
     },
     prelude::Backend,
-    tensor::{Data, Shape, Tensor},
+    tensor::{Shape, Tensor, TensorData},
 };
 
 #[derive(Module, Debug)]
@@ -188,7 +188,7 @@ impl<B: Backend> CategoricalDistributionLayer<B> {
         let z = (0..atoms)
             .map(|i| min_value + (max_value - min_value) * (i as f32) / (atoms as f32 - 1.0))
             .collect::<Vec<_>>();
-        let z = Tensor::from_data(Data::new(z, Shape::from([atoms])).convert(), device);
+        let z = Tensor::from_data(TensorData::new(z, Shape::from([atoms])).convert::<B::FloatElem>(), device);
 
         Self {
             value_layer,
@@ -246,7 +246,6 @@ impl<B: Backend> QuantileRegressionLayer<B> {
 }
 
 #[derive(Module, Debug)]
-
 pub enum OutputLayer<B: Backend> {
     Expectation(ValueLayer<B>),
     CategoricalDistribution(CategoricalDistributionLayer<B>),

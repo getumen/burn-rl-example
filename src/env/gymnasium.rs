@@ -238,12 +238,12 @@ mod tests {
 
         {
             let (env_name, action_space, observation_space) = (
-            "Breakout-v4",
-            ActionSpace::Discrete(4),
-            ObservationSpace::Box {
-                shape: [1, 3, 210, 160],
-            },
-        );
+                "Breakout-v4",
+                ActionSpace::Discrete(4),
+                ObservationSpace::Box {
+                    shape: [1, 3, 210, 160],
+                },
+            );
             let _result: anyhow::Result<()> = Python::with_gil(|py| {
                 let mut env = GymnasiumEnv3D::new(py, env_name, true)?;
                 assert_eq!(env.action_space(), &action_space);

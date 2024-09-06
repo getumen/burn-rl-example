@@ -12,7 +12,7 @@ use burn::{
         GradientsParams, Optimizer as _, SimpleOptimizer,
     },
     record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder as _},
-    tensor::{backend::AutodiffBackend, Data, ElementConversion as _, Shape, Tensor},
+    tensor::{backend::AutodiffBackend, ElementConversion as _, Shape, Tensor, TensorData},
 };
 
 use crate::{
@@ -92,7 +92,7 @@ where
         &self,
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
-    ) -> Vec<f32> {
+    ) -> anyhow::Result<Vec<f32>> {
         let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let mut shape = *self.observation_space.shape();
@@ -115,9 +115,9 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(1, num_class as usize)
+                        .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(1, num_class as usize)
+                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -133,12 +133,8 @@ where
         let td: Vec<f32> = (q_value.inner() - targets)
             .sum_dim(1)
             .into_data()
-            .value
-            .iter()
-            .map(|x| x.elem::<f32>())
-            .map(|x| x.abs())
-            .collect();
-        td
+            .to_vec().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+        Ok(td)
     }
 }
 
@@ -152,12 +148,12 @@ where
 {
     fn policy(&self, observation: &[f32]) -> Action {
         let shape = *self.observation_space.shape();
-        let feature = Tensor::from_data(
-            Data::new(observation.to_vec(), Shape::new(shape)).convert(),
+        let feature: Tensor<<B as AutodiffBackend>::InnerBackend, D> = Tensor::from_data(
+            TensorData::new(observation.to_vec(), Shape::new(shape)).convert::<B::FloatElem>(),
             &self.device,
         );
         let scores = self.model.valid().predict(feature);
-        println!("score: {:?}", scores.to_data().value);
+        println!("score: {:?}", scores.to_data().to_vec::<f32>());
         match self.action_space {
             ActionSpace::Discrete(..) => {
                 let scores = scores.argmax(1);
@@ -200,22 +196,21 @@ where
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
-                    
 
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_quantile)
+                        .repeat(&[1,1, num_quantile])
                 } else {
                     let next_q_value = self
                         .teacher_model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
-                    
+
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_quantile)
+                        .repeat(&[1,1, num_quantile])
                 };
                 let next_quantiles = next_quantiles.clone().gather(1, next_actions).reshape([
                     batch_size,
@@ -250,17 +245,17 @@ where
                         .clone()
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(2, num_quantile),
+                        .repeat(&[1,1, num_quantile]),
                 ); // [batch_size, 1, num_quantile]
                 let quantile_values = quantile_values.permute([0, 2, 1]); // [batch_size, num_quantile, 1]
                 let loss = HuberLossConfig::new(1.0)
-                    .init(&self.device)
+                    .init()
                     .forward_no_reduction(quantile_values.clone(), target_quantiles.clone());
 
                 let td_errors = (target_quantiles - quantile_values).inner();
                 let is_negative = td_errors.clone().lower(td_errors.zeros_like()).float();
                 let quantiles = Tensor::from_data(
-                    Data::new(quantiles, Shape::new([1, num_quantile, 1])).convert(),
+                    TensorData::new(quantiles, Shape::new([1, num_quantile, 1])).convert::<B::FloatElem>(),
                     &self.device,
                 ); // [1, num_quantile, 1]
                 let quantile_weights = (quantiles - is_negative).abs();
@@ -273,7 +268,7 @@ where
             }
         };
         let weights = Tensor::from_data(
-            Data::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert(),
+            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert::<B::FloatElem>(),
             &self.device,
         );
         let loss = loss * weights;
