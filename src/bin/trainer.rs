@@ -4,7 +4,7 @@ use anyhow::Context;
 use burn::{
     backend::{libtorch::LibTorchDevice, Autodiff, LibTorch},
     grad_clipping::GradientClippingConfig,
-    lr_scheduler::{constant::ConstantLr, exponential::ExponentialLrSchedulerConfig},
+    lr_scheduler::constant::ConstantLr,
     optim::AdamConfig,
 };
 use burn_rl_example::{
@@ -126,7 +126,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
             let mut agent = DeepQNetworkAgent::new(
                 model,
                 optimizer,
-                ExponentialLrSchedulerConfig::new(0.001, 0.999).init(),
+                ConstantLr::new(0.00025),
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
