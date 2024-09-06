@@ -115,11 +115,11 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 } else {
                     next_target_q_value
                         .max_dim(1)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 }
             }
         };
@@ -196,11 +196,11 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 } else {
                     next_target_q_value
                         .max_dim(1)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 }
             }
         };

@@ -58,7 +58,7 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                                 .convert::<B::FloatElem>(),
                             &Default::default(),
                         )
-                        .repeat(&[1, num_class as usize]),
+                        .repeat_dim(1, num_class as usize),
                     },
                     match self.action_space {
                         ActionSpace::Discrete(num_class) => Tensor::from_data(
@@ -66,7 +66,7 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                                 .convert::<B::FloatElem>(),
                             &Default::default(),
                         )
-                        .repeat(&[1, num_class as usize]),
+                        .repeat_dim(1, num_class as usize),
                     },
                 )
             })

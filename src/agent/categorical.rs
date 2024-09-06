@@ -122,11 +122,11 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 } else {
                     next_target_q_value
                         .max_dim(1)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 }
             }
         };
@@ -207,7 +207,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1, 1, num_atoms])
+                        .repeat_dim(2, num_atoms)
                 } else {
                     let next_q_value = self
                         .teacher_model
@@ -217,7 +217,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1, 1, num_atoms])
+                        .repeat_dim(2, num_atoms)
                 };
                 let next_dists = next_probs
                     .clone()
@@ -247,7 +247,7 @@ where
                             .clone()
                             .argmax(1)
                             .reshape([batch_size, 1, 1])
-                            .repeat(&[1, 1, num_atoms]),
+                            .repeat_dim(2, num_atoms),
                     )
                     .reshape([batch_size, num_atoms]);
 

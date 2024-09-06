@@ -115,11 +115,11 @@ where
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
                         .gather(1, next_actions)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 } else {
                     next_target_q_value
                         .max_dim(1)
-                        .repeat(&[1, num_class as usize])
+                        .repeat_dim(1, num_class as usize)
                 }
             }
         };
@@ -204,7 +204,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1, 1, num_quantile])
+                        .repeat_dim(2, num_quantile)
                 } else {
                     let next_q_value = self
                         .teacher_model
@@ -214,7 +214,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1, 1, num_quantile])
+                        .repeat_dim(2, num_quantile)
                 };
                 let next_quantiles = next_quantiles.clone().gather(1, next_actions).reshape([
                     batch_size,
@@ -249,7 +249,7 @@ where
                         .clone()
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1, 1, num_quantile]),
+                        .repeat_dim(2, num_quantile),
                 ); // [batch_size, 1, num_quantile]
                 let quantile_values = quantile_values.permute([0, 2, 1]); // [batch_size, num_quantile, 1]
                 let loss = HuberLossConfig::new(1.0)
