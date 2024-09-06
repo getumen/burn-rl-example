@@ -1,6 +1,6 @@
 use burn::{
     data::dataloader::batcher::Batcher,
-    tensor::{backend::AutodiffBackend, Data, Shape, Tensor},
+    tensor::{backend::AutodiffBackend, Shape, Tensor, TensorData},
 };
 
 use crate::{Action, ActionSpace, DeepQNetworkState, Experience};
@@ -38,12 +38,13 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                 let next_obs_len = x.state.next_observation.len();
                 (
                     Tensor::from_data(
-                        Data::new(x.state.observation, Shape::new([1, obs_len])).convert(),
+                        TensorData::new(x.state.observation, Shape::new([1, obs_len]))
+                            .convert::<B::FloatElem>(),
                         &Default::default(),
                     ),
                     Tensor::from_data(
-                        Data::new(x.state.next_observation, Shape::new([1, next_obs_len]))
-                            .convert(),
+                        TensorData::new(x.state.next_observation, Shape::new([1, next_obs_len]))
+                            .convert::<B::FloatElem>(),
                         &Default::default(),
                     ),
                     match (x.action, self.action_space) {
@@ -53,17 +54,19 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                     },
                     match self.action_space {
                         ActionSpace::Discrete(num_class) => Tensor::from_data(
-                            Data::new(vec![x.reward], Shape::new([1, 1])).convert(),
+                            TensorData::new(vec![x.reward], Shape::new([1, 1]))
+                                .convert::<B::FloatElem>(),
                             &Default::default(),
                         )
-                        .repeat(1, num_class as usize),
+                        .repeat_dim(1, num_class as usize),
                     },
                     match self.action_space {
                         ActionSpace::Discrete(num_class) => Tensor::from_data(
-                            Data::new(vec![x.is_done as i32], Shape::new([1, 1])).convert(),
+                            TensorData::new(vec![x.is_done as i32], Shape::new([1, 1]))
+                                .convert::<B::FloatElem>(),
                             &Default::default(),
                         )
-                        .repeat(1, num_class as usize),
+                        .repeat_dim(1, num_class as usize),
                     },
                 )
             })

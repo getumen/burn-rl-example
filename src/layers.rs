@@ -3,7 +3,7 @@ use burn::{
     module::{Module, Param},
     nn::Initializer,
     prelude::Backend,
-    tensor::{Data, Shape, Tensor},
+    tensor::{Shape, Tensor, TensorData},
 };
 use rand_distr::{Distribution, Normal};
 
@@ -78,7 +78,7 @@ impl<B: Backend> NoisyLinear<B> {
             .map(|x: f32| x.signum() * x.abs().sqrt())
             .collect();
         let epsilon_in = Tensor::from_data(
-            Data::new(epsilon_in, Shape::new([d_input, 1])).convert(),
+            TensorData::new(epsilon_in, Shape::new([d_input, 1])).convert::<B::FloatElem>(),
             &device,
         );
         let epsilon_out = (0..self.weight_mu.shape().dims[1])
@@ -86,7 +86,7 @@ impl<B: Backend> NoisyLinear<B> {
             .map(|x: f32| x.signum() * x.abs().sqrt())
             .collect();
         let epsilon_out = Tensor::from_data(
-            Data::new(epsilon_out, Shape::new([1, d_output])).convert(),
+            TensorData::new(epsilon_out, Shape::new([1, d_output])).convert::<B::FloatElem>(),
             &device,
         );
 

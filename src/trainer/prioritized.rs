@@ -116,7 +116,7 @@ impl PrioritizedReplayTrainer {
                 }
                 if let Ok((indexes, batch, weights)) = memory.sample() {
                     agent.update(self.gamma, &batch, &weights)?;
-                    let td_errors = agent.temporaral_difference_error(self.gamma, &batch);
+                    let td_errors = agent.temporaral_difference_error(self.gamma, &batch)?;
                     let (indexes, td_errors) = indexes
                         .into_iter()
                         .zip(td_errors)
@@ -189,9 +189,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
                     let (indexes, experiences, weights) = {
                         let priorities: Vec<(usize, f32)> = {
                             let priorities = priorities_clone.read();
-                            (0..batch_size)
-                                .map(|_| priorities.sample())
-                                .collect()
+                            (0..batch_size).map(|_| priorities.sample()).collect()
                         };
                         let mut indexes = Vec::with_capacity(batch_size);
                         let mut experiences = Vec::with_capacity(batch_size);
@@ -259,10 +257,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
     }
 
     pub fn sample(&self) -> anyhow::Result<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)> {
-        self
-            .batch_channel
-            .try_recv()
-            .with_context(|| "recv batch")
+        self.batch_channel.try_recv().with_context(|| "recv batch")
     }
 }
 
@@ -284,7 +279,15 @@ impl SumTree {
         let mut parent = tree_index / 2;
         while parent > 0 {
             self.data[parent] = self.data[2 * parent] + self.data[2 * parent + 1];
-            assert!(!self.data[parent].is_nan());
+            debug_assert!(
+                !self.data[parent].is_nan(),
+                "parent: {}, left child: {}, right child: {}, index: {}, priority: {}",
+                self.data[parent],
+                self.data[2 * parent],
+                self.data[2 * parent + 1],
+                index,
+                priority,
+            );
             parent /= 2;
         }
     }

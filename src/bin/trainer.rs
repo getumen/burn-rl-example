@@ -267,17 +267,21 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
 
 fn main() -> anyhow::Result<()> {
     Python::with_gil(|py| -> anyhow::Result<()> {
-        let env_1d = ["CartPole-v1",
+        let env_1d = [
+            "CartPole-v1",
             "MountainCar-v0",
             "Acrobot-v1",
             "Pendulum-v0",
-            "LunarLander-v2"];
+            "LunarLander-v2",
+        ];
         let env_3d = ["Breakout-v4"];
 
-        let super_mario_env = ["SuperMarioBros-v0",
+        let super_mario_env = [
+            "SuperMarioBros-v0",
             "SuperMarioBros-v1",
             "SuperMarioBros-v2",
-            "SuperMarioBros-v3"];
+            "SuperMarioBros-v3",
+        ];
 
         let args = Args::parse();
 
