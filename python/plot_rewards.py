@@ -16,7 +16,7 @@ def main(dir, output, max_epoch):
     epoch_dirs = sorted([(int(x.name), x) for x in path.iterdir() if x.is_dir()], key=lambda x: x[0])
     rewards = []
     for epoch, epoch_dir in epoch_dirs:
-        if epoch >= max_epoch:
+        if max_epoch and epoch >= max_epoch:
             break
         with open(epoch_dir / 'train.jsonl', 'r') as f:
             reward = 0

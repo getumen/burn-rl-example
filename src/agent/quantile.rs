@@ -117,7 +117,9 @@ where
                         .gather(1, next_actions)
                         .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
+                    next_target_q_value
+                        .max_dim(1)
+                        .repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -131,9 +133,11 @@ where
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
+            .abs()
             .sum_dim(1)
             .into_data()
-            .to_vec().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+            .to_vec()
+            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
         Ok(td)
     }
 }
@@ -200,7 +204,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1,1, num_quantile])
+                        .repeat(&[1, 1, num_quantile])
                 } else {
                     let next_q_value = self
                         .teacher_model
@@ -210,7 +214,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1,1, num_quantile])
+                        .repeat(&[1, 1, num_quantile])
                 };
                 let next_quantiles = next_quantiles.clone().gather(1, next_actions).reshape([
                     batch_size,
@@ -245,7 +249,7 @@ where
                         .clone()
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1,1, num_quantile]),
+                        .repeat(&[1, 1, num_quantile]),
                 ); // [batch_size, 1, num_quantile]
                 let quantile_values = quantile_values.permute([0, 2, 1]); // [batch_size, num_quantile, 1]
                 let loss = HuberLossConfig::new(1.0)
@@ -255,7 +259,8 @@ where
                 let td_errors = (target_quantiles - quantile_values).inner();
                 let is_negative = td_errors.clone().lower(td_errors.zeros_like()).float();
                 let quantiles = Tensor::from_data(
-                    TensorData::new(quantiles, Shape::new([1, num_quantile, 1])).convert::<B::FloatElem>(),
+                    TensorData::new(quantiles, Shape::new([1, num_quantile, 1]))
+                        .convert::<B::FloatElem>(),
                     &self.device,
                 ); // [1, num_quantile, 1]
                 let quantile_weights = (quantiles - is_negative).abs();
@@ -268,7 +273,8 @@ where
             }
         };
         let weights = Tensor::from_data(
-            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert::<B::FloatElem>(),
+            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1]))
+                .convert::<B::FloatElem>(),
             &self.device,
         );
         let loss = loss * weights;

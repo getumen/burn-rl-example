@@ -188,7 +188,10 @@ impl<B: Backend> CategoricalDistributionLayer<B> {
         let z = (0..atoms)
             .map(|i| min_value + (max_value - min_value) * (i as f32) / (atoms as f32 - 1.0))
             .collect::<Vec<_>>();
-        let z = Tensor::from_data(TensorData::new(z, Shape::from([atoms])).convert::<B::FloatElem>(), device);
+        let z = Tensor::from_data(
+            TensorData::new(z, Shape::from([atoms])).convert::<B::FloatElem>(),
+            device,
+        );
 
         Self {
             value_layer,
@@ -240,7 +243,7 @@ impl<B: Backend> QuantileRegressionLayer<B> {
     pub fn forward_distribution(&self, x: Tensor<B, 2>) -> Tensor<B, 3> {
         let shape = x.shape().dims;
         let x = self.value_layer.forward(x);
-        
+
         x.reshape([shape[0], self.action_num, self.quantiles])
     }
 }

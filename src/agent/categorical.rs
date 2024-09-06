@@ -124,7 +124,9 @@ where
                         .gather(1, next_actions)
                         .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
+                    next_target_q_value
+                        .max_dim(1)
+                        .repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -138,9 +140,11 @@ where
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
+            .abs()
             .sum_dim(1)
             .into_data()
-            .to_vec().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+            .to_vec()
+            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
         Ok(td)
     }
 }
@@ -203,7 +207,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1,1, num_atoms])
+                        .repeat(&[1, 1, num_atoms])
                 } else {
                     let next_q_value = self
                         .teacher_model
@@ -213,7 +217,7 @@ where
                     next_q_value
                         .argmax(1)
                         .reshape([batch_size, 1, 1])
-                        .repeat(&[1,1, num_atoms])
+                        .repeat(&[1, 1, num_atoms])
                 };
                 let next_dists = next_probs
                     .clone()
@@ -243,7 +247,7 @@ where
                             .clone()
                             .argmax(1)
                             .reshape([batch_size, 1, 1])
-                            .repeat(&[1,1, num_atoms]),
+                            .repeat(&[1, 1, num_atoms]),
                     )
                     .reshape([batch_size, num_atoms]);
 
@@ -251,7 +255,8 @@ where
             }
         };
         let weights = Tensor::from_data(
-            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert::<B::FloatElem>(),
+            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1]))
+                .convert::<B::FloatElem>(),
             &self.device,
         );
         let loss = loss.sum_dim(1) * weights;
@@ -372,7 +377,10 @@ fn shift_and_projection<B: Backend>(
     let z = (0..num_atoms)
         .map(|i| min_value + (max_value - min_value) * (i as f32) / (num_atoms as f32 - 1.0))
         .collect::<Vec<_>>();
-    let z = Tensor::from_data(TensorData::new(z, Shape::new([1, num_atoms])).convert::<B::FloatElem>(), &device); // [1, num_atoms]
+    let z = Tensor::from_data(
+        TensorData::new(z, Shape::new([1, num_atoms])).convert::<B::FloatElem>(),
+        &device,
+    ); // [1, num_atoms]
     let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
     let rewards = rewards.clone().mean_dim(1); // [batch, 1]
     let dones = dones.clone().mean_dim(1); // [batch, 1]
@@ -461,14 +469,21 @@ mod tests {
 
             approx::assert_abs_diff_eq!(expected.iter().sum::<f32>(), 1.0f32, epsilon = 1e-6);
             approx::assert_abs_diff_eq!(
-                result.clone().to_data().to_vec::<f32>().unwrap().into_iter().sum::<f32>(),
+                result
+                    .clone()
+                    .to_data()
+                    .to_vec::<f32>()
+                    .unwrap()
+                    .into_iter()
+                    .sum::<f32>(),
                 1.0f32,
                 epsilon = 1e-6
             );
             assert_eq!(
                 result
                     .to_data()
-                    .to_vec::<f32>().unwrap()
+                    .to_vec::<f32>()
+                    .unwrap()
                     .into_iter()
                     .map(|x| format!("{}: {:.4}", name, x))
                     .collect::<Vec<_>>(),

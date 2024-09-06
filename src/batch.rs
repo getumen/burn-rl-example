@@ -38,7 +38,8 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                 let next_obs_len = x.state.next_observation.len();
                 (
                     Tensor::from_data(
-                        TensorData::new(x.state.observation, Shape::new([1, obs_len])).convert::<B::FloatElem>(),
+                        TensorData::new(x.state.observation, Shape::new([1, obs_len]))
+                            .convert::<B::FloatElem>(),
                         &Default::default(),
                     ),
                     Tensor::from_data(
@@ -53,14 +54,16 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                     },
                     match self.action_space {
                         ActionSpace::Discrete(num_class) => Tensor::from_data(
-                            TensorData::new(vec![x.reward], Shape::new([1, 1])).convert::<B::FloatElem>(),
+                            TensorData::new(vec![x.reward], Shape::new([1, 1]))
+                                .convert::<B::FloatElem>(),
                             &Default::default(),
                         )
                         .repeat(&[1, num_class as usize]),
                     },
                     match self.action_space {
                         ActionSpace::Discrete(num_class) => Tensor::from_data(
-                            TensorData::new(vec![x.is_done as i32], Shape::new([1, 1])).convert::<B::FloatElem>(),
+                            TensorData::new(vec![x.is_done as i32], Shape::new([1, 1]))
+                                .convert::<B::FloatElem>(),
                             &Default::default(),
                         )
                         .repeat(&[1, num_class as usize]),

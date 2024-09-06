@@ -101,7 +101,11 @@ pub trait Agent<S: State>: Clone + Send {
 }
 
 pub trait PrioritizedReplay<S: State> {
-    fn temporaral_difference_error(&self, gamma: f32, experiences: &[Experience<S>]) -> anyhow::Result<Vec<f32>>;
+    fn temporaral_difference_error(
+        &self,
+        gamma: f32,
+        experiences: &[Experience<S>],
+    ) -> anyhow::Result<Vec<f32>>;
 }
 
 pub trait PrioritizedReplayAgent<S: State>: Agent<S> + PrioritizedReplay<S> {}

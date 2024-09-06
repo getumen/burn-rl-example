@@ -279,7 +279,15 @@ impl SumTree {
         let mut parent = tree_index / 2;
         while parent > 0 {
             self.data[parent] = self.data[2 * parent] + self.data[2 * parent + 1];
-            assert!(!self.data[parent].is_nan());
+            debug_assert!(
+                !self.data[parent].is_nan(),
+                "parent: {}, left child: {}, right child: {}, index: {}, priority: {}",
+                self.data[parent],
+                self.data[2 * parent],
+                self.data[2 * parent + 1],
+                index,
+                priority,
+            );
             parent /= 2;
         }
     }

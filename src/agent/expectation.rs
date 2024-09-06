@@ -92,7 +92,7 @@ where
         &self,
         gamma: f32,
         experiences: &[Experience<DeepQNetworkState>],
-    ) -> anyhow::Result< Vec<f32>> {
+    ) -> anyhow::Result<Vec<f32>> {
         let batcher = DeepQNetworkBathcer::new(self.device.clone(), self.action_space);
 
         let mut shape = *self.observation_space.shape();
@@ -117,7 +117,9 @@ where
                         .gather(1, next_actions)
                         .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
+                    next_target_q_value
+                        .max_dim(1)
+                        .repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -131,9 +133,11 @@ where
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
+            .abs()
             .sum_dim(1)
             .into_data()
-            .to_vec().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+            .to_vec()
+            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
         Ok(td)
     }
 }
@@ -194,7 +198,9 @@ where
                         .gather(1, next_actions)
                         .repeat(&[1, num_class as usize])
                 } else {
-                    next_target_q_value.max_dim(1).repeat(&[1, num_class as usize])
+                    next_target_q_value
+                        .max_dim(1)
+                        .repeat(&[1, num_class as usize])
                 }
             }
         };
@@ -210,7 +216,8 @@ where
             .init()
             .forward_no_reduction(q_value, targets);
         let weights = Tensor::from_data(
-            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1])).convert::<B::FloatElem>(),
+            TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1]))
+                .convert::<B::FloatElem>(),
             &self.device,
         );
         let loss = loss.sum_dim(1) * weights;
