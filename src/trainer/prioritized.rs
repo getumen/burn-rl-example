@@ -116,8 +116,10 @@ impl PrioritizedReplayTrainer {
                 }
                 if let Ok(batch) = memory.sample() {
                     agent.update(self.gamma, &batch.experiences, &batch.weights)?;
-                    let td_errors = agent.temporaral_difference_error(self.gamma, &batch.experiences)?;
-                    let (indexes, td_errors) = batch.indexes
+                    let td_errors =
+                        agent.temporaral_difference_error(self.gamma, &batch.experiences)?;
+                    let (indexes, td_errors) = batch
+                        .indexes
                         .iter()
                         .zip(td_errors)
                         .filter(|(_, x)| !x.is_nan())

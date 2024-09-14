@@ -125,6 +125,7 @@ impl<B: Backend> DuelingLayer<B> {
 }
 
 #[derive(Module, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ValueLayer<B: Backend> {
     Linear(LinearValueLayer<B>),
     Dueling(DuelingLayer<B>),
