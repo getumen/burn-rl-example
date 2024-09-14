@@ -118,7 +118,7 @@ mod tests {
         {
             let (env_name, action_space, observation_space) = (
                 "SuperMarioBros-v3",
-                ActionSpace::Discrete(5),
+                ActionSpace::Discrete(12),
                 ObservationSpace::Box {
                     shape: [1, 3, 240, 256],
                 },

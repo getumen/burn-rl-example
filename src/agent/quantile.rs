@@ -2,6 +2,7 @@ use std::{fmt::Display, fs::File, path::Path};
 
 use anyhow::Context as _;
 use burn::{
+    config::Config,
     data::dataloader::batcher::Batcher as _,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
@@ -20,6 +21,13 @@ use crate::{
     Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
 
+#[derive(Debug, Config)]
+pub struct QuantileRegressionAgentConfig {
+    teacher_update_freq: usize,
+    n_step: usize,
+    double_dqn: bool,
+}
+
 #[derive(Clone)]
 pub struct QuantileRegressionAgent<
     B: AutodiffBackend,
@@ -36,10 +44,8 @@ pub struct QuantileRegressionAgent<
     action_space: ActionSpace,
     device: B::Device,
     update_counter: usize,
-    teacher_update_freq: usize,
 
-    n_step: usize,
-    double_dqn: bool,
+    config: QuantileRegressionAgentConfig,
 }
 
 impl<
@@ -57,10 +63,8 @@ impl<
         observation_space: ObservationSpace<D>,
         action_space: ActionSpace,
         device: B::Device,
-        teacher_update_freq: usize,
 
-        n_step: usize,
-        double_dqn: bool,
+        config: QuantileRegressionAgentConfig,
     ) -> Self {
         let teacher_model = model.clone().fork(&device);
         Self {
@@ -72,9 +76,7 @@ impl<
             action_space,
             device,
             update_counter: 0,
-            teacher_update_freq,
-            n_step,
-            double_dqn,
+            config,
         }
     }
 }
@@ -108,7 +110,7 @@ where
             .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
-                if self.double_dqn {
+                if self.config.double_dqn {
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
@@ -129,7 +131,7 @@ where
             * (item.action.ones_like().inner() - item.action.clone().inner())
             + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.n_step as i32))
+            .mul_scalar(gamma.powi(self.config.n_step as i32))
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
@@ -196,7 +198,7 @@ where
 
         let loss = match self.action_space {
             ActionSpace::Discrete(..) => {
-                let next_actions = if self.double_dqn {
+                let next_actions = if self.config.double_dqn {
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
@@ -236,7 +238,7 @@ where
                     .reshape([batch_size, 1, 1]);
 
                 let target_quantiles = reward
-                    + next_quantiles.mul_scalar(gamma.powi(self.n_step as i32))
+                    + next_quantiles.mul_scalar(gamma.powi(self.config.n_step as i32))
                         * (done.ones_like() - done); // [batch_size, 1, num_quantile]
                 let target_quantiles = Tensor::from_inner(target_quantiles);
 
@@ -284,7 +286,7 @@ where
         self.model = self.optimizer.step(self.lr_scheduler.step(), model, grads);
 
         self.update_counter += 1;
-        if self.update_counter % self.teacher_update_freq == 0 {
+        if self.update_counter % self.config.teacher_update_freq == 0 {
             self.teacher_model = self.model.clone().fork(&self.device);
         }
 

@@ -9,8 +9,9 @@ use burn::{
 };
 use burn_rl_example::{
     agent::{
-        categorical::CategoricalDeepQNetworkAgent, expectation::DeepQNetworkAgent,
-        quantile::QuantileRegressionAgent,
+        categorical::{CategoricalDeepQNetworkAgent, CategoricalDeepQNetworkAgentConfig},
+        expectation::{DeepQNetworkAgent, DeepQNetworkAgentConfig},
+        quantile::{QuantileRegressionAgent, QuantileRegressionAgentConfig},
     },
     env::{
         gym_super_mario_bros::GymSuperMarioBrosEnv,
@@ -65,7 +66,7 @@ enum Distributional {
 }
 
 impl Distributional {
-    fn to_output_layer_config(&self, env_name: &str) -> OutputLayerConfig {
+    fn output_layer_config(&self, _env_name: &str) -> OutputLayerConfig {
         match self {
             Distributional::Expectation => OutputLayerConfig::Expectation,
             Distributional::Categorical => OutputLayerConfig::CategoricalDistribution {
@@ -99,7 +100,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
     let yyyymmdd_hhmmss = now.format("%Y%m%d_%H%M%S");
     let artifacts_path = artifacts_path.join(yyyymmdd_hhmmss.to_string());
 
-    let output_layer_config = args.distributional.to_output_layer_config(&args.env_name);
+    let output_layer_config = args.distributional.output_layer_config(&args.env_name);
 
     let model = DeepQNetworkModel::<AutodiffBackend>::new(
         &device,
@@ -130,9 +131,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                1000,
-                args.n_step,
-                args.double_dqn,
+                DeepQNetworkAgentConfig::new(1000, args.n_step, args.double_dqn),
             );
 
             if let Some(restore_path) = &args.restore_path {
@@ -178,11 +177,13 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                1000,
-                args.n_step,
-                args.double_dqn,
-                min_value,
-                max_value,
+                CategoricalDeepQNetworkAgentConfig::new(
+                    1000,
+                    args.n_step,
+                    args.double_dqn,
+                    min_value,
+                    max_value,
+                ),
             );
 
             if let Some(restore_path) = &args.restore_path {
@@ -224,9 +225,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                1000,
-                args.n_step,
-                args.double_dqn,
+                QuantileRegressionAgentConfig::new(1000, args.n_step, args.double_dqn),
             );
 
             if let Some(restore_path) = &args.restore_path {

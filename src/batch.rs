@@ -24,13 +24,7 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
     for DeepQNetworkBathcer<B>
 {
     fn batch(&self, items: Vec<Experience<DeepQNetworkState>>) -> DeepQNetworkBatch<B> {
-        let (observation, next_observation, action, reward, done): (
-            Vec<Tensor<B, 2>>,
-            Vec<Tensor<B, 2>>,
-            Vec<Tensor<B, 2>>,
-            Vec<Tensor<B, 2>>,
-            Vec<Tensor<B, 2>>,
-        ) = items
+        let result = items
             .into_iter()
             .filter(|x| !x.state.observation.is_empty() && !x.state.next_observation.is_empty())
             .map(|x| {
@@ -82,11 +76,11 @@ impl<B: AutodiffBackend> Batcher<Experience<DeepQNetworkState>, DeepQNetworkBatc
                 },
             );
 
-        let observation = Tensor::cat(observation, 0).to_device(&self.device);
-        let next_observation = Tensor::cat(next_observation, 0).to_device(&self.device);
-        let action = Tensor::cat(action, 0).to_device(&self.device);
-        let reward = Tensor::cat(reward, 0).to_device(&self.device);
-        let done = Tensor::cat(done, 0).to_device(&self.device);
+        let observation = Tensor::cat(result.0, 0).to_device(&self.device);
+        let next_observation = Tensor::cat(result.1, 0).to_device(&self.device);
+        let action = Tensor::cat(result.2, 0).to_device(&self.device);
+        let reward = Tensor::cat(result.3, 0).to_device(&self.device);
+        let done = Tensor::cat(result.4, 0).to_device(&self.device);
 
         DeepQNetworkBatch {
             observation,
