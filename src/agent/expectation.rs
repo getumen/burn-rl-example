@@ -2,6 +2,7 @@ use std::{fmt::Display, fs::File, path::Path};
 
 use anyhow::{anyhow, Context};
 use burn::{
+    config::Config,
     data::dataloader::batcher::Batcher,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
@@ -20,6 +21,13 @@ use crate::{
     Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
 
+#[derive(Debug, Config)]
+pub struct DeepQNetworkAgentConfig {
+    teacher_update_freq: usize,
+    n_step: usize,
+    double_dqn: bool,
+}
+
 #[derive(Clone)]
 pub struct DeepQNetworkAgent<
     B: AutodiffBackend,
@@ -36,10 +44,8 @@ pub struct DeepQNetworkAgent<
     action_space: ActionSpace,
     device: B::Device,
     update_counter: usize,
-    teacher_update_freq: usize,
 
-    n_step: usize,
-    double_dqn: bool,
+    config: DeepQNetworkAgentConfig,
 }
 
 impl<
@@ -57,10 +63,7 @@ impl<
         observation_space: ObservationSpace<D>,
         action_space: ActionSpace,
         device: B::Device,
-        teacher_update_freq: usize,
-
-        n_step: usize,
-        double_dqn: bool,
+        config: DeepQNetworkAgentConfig,
     ) -> Self {
         let teacher_model = model.clone().fork(&device);
         Self {
@@ -72,9 +75,7 @@ impl<
             action_space,
             device,
             update_counter: 0,
-            teacher_update_freq,
-            n_step,
-            double_dqn,
+            config,
         }
     }
 }
@@ -108,7 +109,7 @@ where
             .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
-                if self.double_dqn {
+                if self.config.double_dqn {
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
@@ -129,7 +130,7 @@ where
             * (item.action.ones_like().inner() - item.action.clone().inner())
             + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.n_step as i32))
+            .mul_scalar(gamma.powi(self.config.n_step as i32))
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
@@ -191,7 +192,7 @@ where
             Tensor::from_inner(next_target_q_value).to_device(&self.device);
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
-                if self.double_dqn {
+                if self.config.double_dqn {
                     let next_q_value = model.predict(item.next_observation.clone().reshape(shape));
                     let next_actions = next_q_value.argmax(1);
                     next_target_q_value
@@ -208,7 +209,7 @@ where
             * (item.action.ones_like().inner() - item.action.clone().inner())
             + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.n_step as i32))
+            .mul_scalar(gamma.powi(self.config.n_step as i32))
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let targets = Tensor::from_inner(targets);
@@ -227,7 +228,7 @@ where
         self.model = self.optimizer.step(self.lr_scheduler.step(), model, grads);
 
         self.update_counter += 1;
-        if self.update_counter % self.teacher_update_freq == 0 {
+        if self.update_counter % self.config.teacher_update_freq == 0 {
             self.teacher_model = self.model.clone().fork(&self.device);
         }
 

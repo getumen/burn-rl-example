@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::{anyhow, Context};
 use burn::{
+    config::Config,
     data::dataloader::batcher::Batcher,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
@@ -18,6 +19,15 @@ use burn::{
     record::{CompactRecorder, HalfPrecisionSettings, Record, Recorder},
     tensor::{backend::AutodiffBackend, ElementConversion, Shape, Tensor, TensorData},
 };
+
+#[derive(Debug, Config)]
+pub struct CategoricalDeepQNetworkAgentConfig {
+    teacher_update_freq: usize,
+    n_step: usize,
+    double_dqn: bool,
+    min_value: f32,
+    max_value: f32,
+}
 
 #[derive(Clone)]
 pub struct CategoricalDeepQNetworkAgent<
@@ -35,13 +45,8 @@ pub struct CategoricalDeepQNetworkAgent<
     action_space: ActionSpace,
     device: B::Device,
     update_counter: usize,
-    teacher_update_freq: usize,
 
-    n_step: usize,
-    double_dqn: bool,
-
-    min_value: f32,
-    max_value: f32,
+    config: CategoricalDeepQNetworkAgentConfig,
 }
 
 impl<
@@ -59,13 +64,8 @@ impl<
         observation_space: ObservationSpace<D>,
         action_space: ActionSpace,
         device: B::Device,
-        teacher_update_freq: usize,
 
-        n_step: usize,
-        double_dqn: bool,
-
-        min_value: f32,
-        max_value: f32,
+        config: CategoricalDeepQNetworkAgentConfig,
     ) -> Self {
         let teacher_model = model.clone().fork(&device);
         Self {
@@ -77,11 +77,7 @@ impl<
             action_space,
             device,
             update_counter: 0,
-            teacher_update_freq,
-            n_step,
-            double_dqn,
-            min_value,
-            max_value,
+            config,
         }
     }
 }
@@ -115,7 +111,7 @@ where
             .predict(item.next_observation.clone().inner().reshape(shape));
         let next_target_q_value = match self.action_space {
             ActionSpace::Discrete(num_class) => {
-                if self.double_dqn {
+                if self.config.double_dqn {
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
@@ -136,7 +132,7 @@ where
             * (item.action.ones_like().inner() - item.action.clone().inner())
             + ((next_target_q_value.clone().inner()
                 * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.n_step as i32))
+            .mul_scalar(gamma.powi(self.config.n_step as i32))
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
@@ -199,7 +195,7 @@ where
 
         let loss = match self.action_space {
             ActionSpace::Discrete(..) => {
-                let next_actions = if self.double_dqn {
+                let next_actions = if self.config.double_dqn {
                     let next_q_value = model
                         .valid()
                         .predict(item.next_observation.clone().inner().reshape(shape));
@@ -228,12 +224,14 @@ where
                     next_dists,
                     item.reward.clone().inner(),
                     item.done.clone().inner(),
-                    batch_size,
-                    num_atoms,
-                    gamma,
-                    self.n_step,
-                    self.min_value,
-                    self.max_value,
+                    ShiftAndProjectionConfig {
+                        batch_size,
+                        num_atoms,
+                        gamma,
+                        n_step: self.config.n_step,
+                        min_value: self.config.min_value,
+                        max_value: self.config.max_value,
+                    },
                 );
                 let target_probs = Tensor::from_inner(target_probs);
 
@@ -266,7 +264,7 @@ where
         self.model = self.optimizer.step(self.lr_scheduler.step(), model, grads);
 
         self.update_counter += 1;
-        if self.update_counter % self.teacher_update_freq == 0 {
+        if self.update_counter % self.config.teacher_update_freq == 0 {
             self.teacher_model = self.model.clone().fork(&self.device);
         }
 
@@ -361,40 +359,49 @@ where
 {
 }
 
-// https://github.com/Silvicek/distributional-dqn/blob/master/distdeepq/build_graph.py#L292-L317
-fn shift_and_projection<B: Backend>(
-    next_dists: Tensor<B, 3>, // [batch, num_class, num_atoms]
-    rewards: Tensor<B, 2>,    // [batch, num_class]
-    dones: Tensor<B, 2>,      // [batch, num_class]
+pub struct ShiftAndProjectionConfig {
     batch_size: usize,
     num_atoms: usize,
     gamma: f32,
     n_step: usize,
     min_value: f32,
     max_value: f32,
+}
+
+// https://github.com/Silvicek/distributional-dqn/blob/master/distdeepq/build_graph.py#L292-L317
+fn shift_and_projection<B: Backend>(
+    next_dists: Tensor<B, 3>, // [batch, num_class, num_atoms]
+    rewards: Tensor<B, 2>,    // [batch, num_class]
+    dones: Tensor<B, 2>,      // [batch, num_class]
+    config: ShiftAndProjectionConfig,
 ) -> Tensor<B, 2> {
     let device = next_dists.device();
-    let z = (0..num_atoms)
-        .map(|i| min_value + (max_value - min_value) * (i as f32) / (num_atoms as f32 - 1.0))
+    let z = (0..config.num_atoms)
+        .map(|i| {
+            config.min_value
+                + (config.max_value - config.min_value) * (i as f32)
+                    / (config.num_atoms as f32 - 1.0)
+        })
         .collect::<Vec<_>>();
     let z = Tensor::from_data(
-        TensorData::new(z, Shape::new([1, num_atoms])).convert::<B::FloatElem>(),
+        TensorData::new(z, Shape::new([1, config.num_atoms])).convert::<B::FloatElem>(),
         &device,
     ); // [1, num_atoms]
-    let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
+    let dz = (config.max_value - config.min_value) / (config.num_atoms as f32 - 1.0);
     let rewards = rewards.clone().mean_dim(1); // [batch, 1]
     let dones = dones.clone().mean_dim(1); // [batch, 1]
-    let target = rewards + (dones.ones_like() - dones) * gamma.powi(n_step as i32) * z.clone(); // [batch, num_atoms]
-    let target = target.clamp(min_value, max_value);
-    let target = target.reshape([batch_size, 1, num_atoms]); // [batch_size, 1, num_atoms]
+    let target =
+        rewards + (dones.ones_like() - dones) * config.gamma.powi(config.n_step as i32) * z.clone(); // [batch, num_atoms]
+    let target = target.clamp(config.min_value, config.max_value);
+    let target = target.reshape([config.batch_size, 1, config.num_atoms]); // [batch_size, 1, num_atoms]
     let z = z // [1, num_atoms]
-        .reshape([1, num_atoms, 1]); // [1, num_atoms, 1]
+        .reshape([1, config.num_atoms, 1]); // [1, num_atoms, 1]
     let modify_coefficient = (target - z).abs() / dz; // [batch, num_atoms, num_atoms]
     let modify_coefficient = (modify_coefficient.ones_like() - modify_coefficient).clamp(0.0, 1.0);
 
     let target_probs = modify_coefficient.matmul(next_dists);
 
-    target_probs.reshape([batch_size, num_atoms])
+    target_probs.reshape([config.batch_size, config.num_atoms])
 }
 
 #[cfg(test)]
@@ -405,7 +412,7 @@ mod tests {
         tensor::Tensor,
     };
 
-    use crate::agent::categorical::shift_and_projection;
+    use crate::agent::categorical::{shift_and_projection, ShiftAndProjectionConfig};
 
     #[test]
     fn test_shift_and_projection() {
@@ -463,8 +470,17 @@ mod tests {
             }
 
             let result = shift_and_projection(
-                next_dists, rewards, dones, batch_size, num_atoms, gamma, n_step, min_value,
-                max_value,
+                next_dists,
+                rewards,
+                dones,
+                ShiftAndProjectionConfig {
+                    batch_size,
+                    num_atoms,
+                    gamma,
+                    n_step,
+                    min_value,
+                    max_value,
+                },
             );
 
             approx::assert_abs_diff_eq!(expected.iter().sum::<f32>(), 1.0f32, epsilon = 1e-6);

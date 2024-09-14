@@ -9,8 +9,9 @@ use burn::{
 };
 use burn_rl_example::{
     agent::{
-        categorical::CategoricalDeepQNetworkAgent, expectation::DeepQNetworkAgent,
-        quantile::QuantileRegressionAgent,
+        categorical::{CategoricalDeepQNetworkAgent, CategoricalDeepQNetworkAgentConfig},
+        expectation::{DeepQNetworkAgent, DeepQNetworkAgentConfig},
+        quantile::{QuantileRegressionAgent, QuantileRegressionAgentConfig},
     },
     env::{
         gym_super_mario_bros::GymSuperMarioBrosEnv,
@@ -130,9 +131,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                1000,
-                args.n_step,
-                args.double_dqn,
+                DeepQNetworkAgentConfig::new(1000, args.n_step, args.double_dqn),
             );
 
             if let Some(restore_path) = &args.restore_path {
@@ -178,11 +177,13 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                1000,
-                args.n_step,
-                args.double_dqn,
-                min_value,
-                max_value,
+                CategoricalDeepQNetworkAgentConfig::new(
+                    1000,
+                    args.n_step,
+                    args.double_dqn,
+                    min_value,
+                    max_value,
+                ),
             );
 
             if let Some(restore_path) = &args.restore_path {
@@ -224,9 +225,7 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                1000,
-                args.n_step,
-                args.double_dqn,
+                QuantileRegressionAgentConfig::new(1000, args.n_step, args.double_dqn),
             );
 
             if let Some(restore_path) = &args.restore_path {
