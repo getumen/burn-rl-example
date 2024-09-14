@@ -4,7 +4,7 @@ use crate::{
     batch::DeepQNetworkBathcer, Action, ActionSpace, Agent, DeepQNetworkState, Distributional,
     Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use burn::{
     data::dataloader::batcher::Batcher,
     lr_scheduler::LrScheduler,
@@ -144,7 +144,7 @@ where
             .sum_dim(1)
             .into_data()
             .to_vec()
-            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+            .map_err(|e| anyhow!("Failed to calculate temporal difference error: {:?}", e))?;
         Ok(td)
     }
 }
@@ -443,8 +443,8 @@ mod tests {
                 .collect::<Vec<_>>();
             let dz = (max_value - min_value) / (num_atoms as f32 - 1.0);
 
-            for atom_index in 0..num_atoms {
-                let q_value = reward + gamma.powi(n_step as i32) * z[atom_index];
+            for z in z {
+                let q_value = reward + gamma.powi(n_step as i32) * z;
                 let q_value = q_value.clamp(min_value, max_value);
                 let q_value_index = (q_value - min_value) / dz;
                 let lower_index = q_value_index.floor() as usize;
@@ -474,7 +474,7 @@ mod tests {
                     .to_data()
                     .to_vec::<f32>()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .sum::<f32>(),
                 1.0f32,
                 epsilon = 1e-6
@@ -484,7 +484,7 @@ mod tests {
                     .to_data()
                     .to_vec::<f32>()
                     .unwrap()
-                    .into_iter()
+                    .iter()
                     .map(|x| format!("{}: {:.4}", name, x))
                     .collect::<Vec<_>>(),
                 expected

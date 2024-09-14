@@ -65,7 +65,7 @@ enum Distributional {
 }
 
 impl Distributional {
-    fn to_output_layer_config(&self, env_name: &str) -> OutputLayerConfig {
+    fn to_output_layer_config(&self, _env_name: &str) -> OutputLayerConfig {
         match self {
             Distributional::Expectation => OutputLayerConfig::Expectation,
             Distributional::Categorical => OutputLayerConfig::CategoricalDistribution {

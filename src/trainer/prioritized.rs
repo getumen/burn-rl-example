@@ -114,11 +114,11 @@ impl PrioritizedReplayTrainer {
                 if epi == 0 {
                     continue;
                 }
-                if let Ok((indexes, batch, weights)) = memory.sample() {
-                    agent.update(self.gamma, &batch, &weights)?;
-                    let td_errors = agent.temporaral_difference_error(self.gamma, &batch)?;
-                    let (indexes, td_errors) = indexes
-                        .into_iter()
+                if let Ok(batch) = memory.sample() {
+                    agent.update(self.gamma, &batch.experiences, &batch.weights)?;
+                    let td_errors = agent.temporaral_difference_error(self.gamma, &batch.experiences)?;
+                    let (indexes, td_errors) = batch.indexes
+                        .iter()
                         .zip(td_errors)
                         .filter(|(_, x)| !x.is_nan())
                         .unzip();
@@ -129,6 +129,12 @@ impl PrioritizedReplayTrainer {
         }
         Ok(())
     }
+}
+
+pub struct PrioritizedBatch<S: State> {
+    indexes: Vec<usize>,
+    experiences: Vec<Experience<S>>,
+    weights: Vec<f32>,
 }
 
 pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
@@ -142,7 +148,7 @@ pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'st
 
     max_priority: f32,
 
-    batch_channel: Receiver<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)>,
+    batch_channel: Receiver<PrioritizedBatch<S>>,
     _samplers: Vec<JoinHandle<()>>,
 }
 
@@ -208,7 +214,13 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
                         }
                         (indexes, experiences, weights)
                     };
-                    tx_clone.send((indexes, experiences, weights)).unwrap();
+                    tx_clone
+                        .send(PrioritizedBatch {
+                            indexes,
+                            experiences,
+                            weights,
+                        })
+                        .unwrap();
                 }
             });
             _samplers.push(_sampler);
@@ -256,7 +268,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
         Ok(())
     }
 
-    pub fn sample(&self) -> anyhow::Result<(Vec<usize>, Vec<Experience<S>>, Vec<f32>)> {
+    pub fn sample(&self) -> anyhow::Result<PrioritizedBatch<S>> {
         self.batch_channel.try_recv().with_context(|| "recv batch")
     }
 }
@@ -316,8 +328,6 @@ impl SumTree {
 
 #[cfg(test)]
 mod tests {
-    use claim::assert_lt;
-
     use super::*;
 
     #[test]
@@ -335,10 +345,10 @@ mod tests {
             let (index, _) = sum_tree.sample();
             count[index] += 1;
         }
-        for i in 0..4 {
-            assert_lt!(
-                (count[i] as f32 - sample_num as f32 * (i + 1) as f32 / 10.0).abs(),
-                sample_num as f32 / 10.0
+        for (i, count) in count.iter().enumerate() {
+            assert!(
+                (*count as f32 - sample_num as f32 * (i + 1) as f32 / 10.0).abs()
+                    < sample_num as f32 / 10.0
             );
         }
     }

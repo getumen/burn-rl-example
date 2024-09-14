@@ -1,6 +1,6 @@
 use std::{fmt::Display, fs::File, path::Path};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use burn::{
     data::dataloader::batcher::Batcher,
     lr_scheduler::LrScheduler,
@@ -137,7 +137,7 @@ where
             .sum_dim(1)
             .into_data()
             .to_vec()
-            .map_err(|e| anyhow::anyhow!("{:?}", e))?;
+            .map_err(|e| anyhow!("tensor data to_vec error: {:?}", e))?;
         Ok(td)
     }
 }

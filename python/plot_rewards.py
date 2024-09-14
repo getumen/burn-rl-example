@@ -4,6 +4,7 @@ import json
 from matplotlib import pyplot as plt
 import numpy as np
 
+
 @click.command()
 @click.option('--dir', help='experiment dir')
 @click.option('--output', help='output file')
@@ -13,7 +14,9 @@ def main(dir, output, max_epoch):
     if not path.exists():
         print(f"{dir} does not exist")
         return
-    epoch_dirs = sorted([(int(x.name), x) for x in path.iterdir() if x.is_dir()], key=lambda x: x[0])
+    epoch_dirs = sorted(
+        [(int(x.name), x) for x in path.iterdir() if x.is_dir()], key=lambda x: x[0]
+    )
     rewards = []
     for epoch, epoch_dir in epoch_dirs:
         if max_epoch and epoch >= max_epoch:
@@ -22,7 +25,7 @@ def main(dir, output, max_epoch):
             reward = 0
             for line in f:
                 data = json.loads(line)
-                reward += data['reward']
+                reward += data["reward"]
             rewards.append((epoch, reward))
     x, y = zip(*rewards)
     avg_y = np.convolve(y, np.ones(20)/20, mode='same')
@@ -34,5 +37,5 @@ def main(dir, output, max_epoch):
     plt.savefig(f'pics/{output}.png')
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
