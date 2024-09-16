@@ -6,7 +6,7 @@ use burn::{
     data::dataloader::batcher::Batcher as _,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
-    nn::loss::HuberLossConfig,
+    nn::loss::{HuberLossConfig, MseLoss},
     optim::{
         adaptor::OptimizerAdaptor,
         record::{AdaptorRecord, AdaptorRecordItem},
@@ -21,11 +21,14 @@ use crate::{
     Estimator, Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
 
+use super::LossFunction;
+
 #[derive(Debug, Config)]
 pub struct QuantileRegressionAgentConfig {
     teacher_update_freq: usize,
     n_step: usize,
     double_dqn: bool,
+    loss_function: LossFunction,
 }
 
 #[derive(Clone)]
@@ -127,13 +130,15 @@ where
         };
         let next_target_q_value: Tensor<B, 2> =
             Tensor::from_inner(next_target_q_value).to_device(&self.device);
+        let targets = next_target_q_value
+            .clone()
+            .inner()
+            .mul_scalar(gamma.powi(self.config.n_step as i32))
+            * (item.done.ones_like().inner() - item.done.clone().inner())
+            + item.reward.clone().inner();
         let targets = q_value.clone().inner()
             * (item.action.ones_like().inner() - item.action.clone().inner())
-            + ((next_target_q_value.clone().inner()
-                * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.config.n_step as i32))
-                + item.reward.clone().inner())
-                * item.action.clone().inner();
+            + targets * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
             .abs()
             .sum_dim(1)
@@ -254,9 +259,13 @@ where
                         .repeat_dim(2, num_quantile),
                 ); // [batch_size, 1, num_quantile]
                 let quantile_values = quantile_values.permute([0, 2, 1]); // [batch_size, num_quantile, 1]
-                let loss = HuberLossConfig::new(1.0)
-                    .init()
-                    .forward_no_reduction(quantile_values.clone(), target_quantiles.clone());
+                let loss = match self.config.loss_function {
+                    LossFunction::Huber => HuberLossConfig::new(1.0)
+                        .init()
+                        .forward_no_reduction(quantile_values.clone(), target_quantiles.clone()),
+                    LossFunction::Squared => MseLoss::new()
+                        .forward_no_reduction(quantile_values.clone(), target_quantiles.clone()),
+                };
 
                 let td_errors = (target_quantiles - quantile_values).inner();
                 let is_negative = td_errors.clone().lower(td_errors.zeros_like()).float();

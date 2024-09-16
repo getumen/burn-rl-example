@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use anyhow::Context;
 use burn::{
     backend::{libtorch::LibTorchDevice, Autodiff, LibTorch},
-    grad_clipping::GradientClippingConfig,
     lr_scheduler::constant::ConstantLr,
     optim::AdamConfig,
 };
@@ -12,6 +11,7 @@ use burn_rl_example::{
         categorical::{CategoricalDeepQNetworkAgent, CategoricalDeepQNetworkAgentConfig},
         expectation::{DeepQNetworkAgent, DeepQNetworkAgentConfig},
         quantile::{QuantileRegressionAgent, QuantileRegressionAgentConfig},
+        LossFunction,
     },
     env::{
         gym_super_mario_bros::GymSuperMarioBrosEnv,
@@ -21,7 +21,7 @@ use burn_rl_example::{
     trainer::{
         prioritized::{PrioritizedReplayMemory, PrioritizedReplayTrainer},
         uniform::{UniformReplayMemory, UniformReplayTrainer},
-        RandomPolicy,
+        RandomPolicy, RewardMapping,
     },
     Agent, Env,
 };
@@ -34,6 +34,10 @@ use pyo3::Python;
 struct Args {
     #[clap(value_enum)]
     distributional: Distributional,
+    #[clap(value_enum)]
+    revenue_mapping: RevenueMapping,
+    #[clap(value_enum)]
+    loss_function: LossFunction,
     #[arg(long)]
     artifacts_path: PathBuf,
     #[arg(long)]
@@ -79,6 +83,14 @@ impl Distributional {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum RevenueMapping {
+    Identity,
+    Clip,
+    Rescaling,
+    SymLog,
+}
+
 fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> {
     type Backend = LibTorch;
     type AutodiffBackend = Autodiff<Backend>;
@@ -112,7 +124,6 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
     );
 
     let optimizer = AdamConfig::new()
-        .with_grad_clipping(Some(GradientClippingConfig::Value(1.0)))
         .with_epsilon(0.01 / args.batch_size as f32)
         .init();
 
@@ -131,7 +142,12 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                DeepQNetworkAgentConfig::new(1000, args.n_step, args.double_dqn),
+                DeepQNetworkAgentConfig::new(
+                    1000,
+                    args.n_step,
+                    args.double_dqn,
+                    args.loss_function,
+                ),
             );
 
             if let Some(restore_path) = &args.restore_path {
@@ -139,28 +155,46 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
             }
 
             if args.prioritized {
-                let mut memory = PrioritizedReplayMemory::new(
-                    2usize.pow(20),
-                    args.batch_size,
-                    args.n_step,
-                    0.6,
-                    args.bellman_gamma,
-                )?;
+                let mut memory =
+                    PrioritizedReplayMemory::new(2usize.pow(20), args.batch_size, 0.6)?;
 
-                let trainer =
-                    PrioritizedReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+                let trainer = PrioritizedReplayTrainer::new(
+                    10000,
+                    args.bellman_gamma,
+                    args.n_step,
+                    match args.revenue_mapping {
+                        RevenueMapping::Identity => RewardMapping::Identity,
+                        RevenueMapping::Clip => RewardMapping::Clip {
+                            min: -1.0,
+                            max: 1.0,
+                        },
+                        RevenueMapping::Rescaling => RewardMapping::Rescaling { epsilon: 0.001 },
+                        RevenueMapping::SymLog => RewardMapping::SymLog,
+                    },
+                    artifacts_path,
+                    true,
+                )?;
 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             } else {
-                let mut memory = UniformReplayMemory::new(
-                    2usize.pow(20),
-                    args.batch_size,
-                    args.n_step,
-                    args.bellman_gamma,
-                )?;
+                let mut memory = UniformReplayMemory::new(2usize.pow(20), args.batch_size)?;
 
-                let trainer =
-                    UniformReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+                let trainer = UniformReplayTrainer::new(
+                    10000,
+                    args.bellman_gamma,
+                    args.n_step,
+                    match args.revenue_mapping {
+                        RevenueMapping::Identity => RewardMapping::Identity,
+                        RevenueMapping::Clip => RewardMapping::Clip {
+                            min: -1.0,
+                            max: 1.0,
+                        },
+                        RevenueMapping::Rescaling => RewardMapping::Rescaling { epsilon: 0.001 },
+                        RevenueMapping::SymLog => RewardMapping::SymLog,
+                    },
+                    artifacts_path,
+                    true,
+                )?;
 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             }
@@ -178,11 +212,12 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 *env.action_space(),
                 device,
                 CategoricalDeepQNetworkAgentConfig::new(
-                    1000,
+                    10000,
                     args.n_step,
                     args.double_dqn,
                     min_value,
                     max_value,
+                    args.loss_function,
                 ),
             );
 
@@ -191,28 +226,46 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
             }
 
             if args.prioritized {
-                let mut memory = PrioritizedReplayMemory::new(
-                    2usize.pow(20),
-                    args.batch_size,
-                    args.n_step,
-                    0.6,
-                    args.bellman_gamma,
-                )?;
+                let mut memory =
+                    PrioritizedReplayMemory::new(2usize.pow(20), args.batch_size, 0.6)?;
 
-                let trainer =
-                    PrioritizedReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+                let trainer = PrioritizedReplayTrainer::new(
+                    10000,
+                    args.bellman_gamma,
+                    args.n_step,
+                    match args.revenue_mapping {
+                        RevenueMapping::Identity => RewardMapping::Identity,
+                        RevenueMapping::Clip => RewardMapping::Clip {
+                            min: -1.0,
+                            max: 1.0,
+                        },
+                        RevenueMapping::Rescaling => RewardMapping::Rescaling { epsilon: 0.001 },
+                        RevenueMapping::SymLog => RewardMapping::SymLog,
+                    },
+                    artifacts_path,
+                    true,
+                )?;
 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             } else {
-                let mut memory = UniformReplayMemory::new(
-                    2usize.pow(20),
-                    args.batch_size,
-                    args.n_step,
-                    args.bellman_gamma,
-                )?;
+                let mut memory = UniformReplayMemory::new(2usize.pow(20), args.batch_size)?;
 
-                let trainer =
-                    UniformReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+                let trainer = UniformReplayTrainer::new(
+                    10000,
+                    args.bellman_gamma,
+                    args.n_step,
+                    match args.revenue_mapping {
+                        RevenueMapping::Identity => RewardMapping::Identity,
+                        RevenueMapping::Clip => RewardMapping::Clip {
+                            min: -1.0,
+                            max: 1.0,
+                        },
+                        RevenueMapping::Rescaling => RewardMapping::Rescaling { epsilon: 0.001 },
+                        RevenueMapping::SymLog => RewardMapping::SymLog,
+                    },
+                    artifacts_path,
+                    true,
+                )?;
 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             }
@@ -225,7 +278,12 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
                 env.observation_space().clone(),
                 *env.action_space(),
                 device,
-                QuantileRegressionAgentConfig::new(1000, args.n_step, args.double_dqn),
+                QuantileRegressionAgentConfig::new(
+                    1000,
+                    args.n_step,
+                    args.double_dqn,
+                    args.loss_function,
+                ),
             );
 
             if let Some(restore_path) = &args.restore_path {
@@ -233,28 +291,46 @@ fn run<const D: usize>(env: &mut impl Env<D>, args: Args) -> anyhow::Result<()> 
             }
 
             if args.prioritized {
-                let mut memory = PrioritizedReplayMemory::new(
-                    2usize.pow(20),
-                    args.batch_size,
-                    args.n_step,
-                    0.6,
-                    args.bellman_gamma,
-                )?;
+                let mut memory =
+                    PrioritizedReplayMemory::new(2usize.pow(20), args.batch_size, 0.6)?;
 
-                let trainer =
-                    PrioritizedReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+                let trainer = PrioritizedReplayTrainer::new(
+                    10000,
+                    args.bellman_gamma,
+                    args.n_step,
+                    match args.revenue_mapping {
+                        RevenueMapping::Identity => RewardMapping::Identity,
+                        RevenueMapping::Clip => RewardMapping::Clip {
+                            min: -1.0,
+                            max: 1.0,
+                        },
+                        RevenueMapping::Rescaling => RewardMapping::Rescaling { epsilon: 0.001 },
+                        RevenueMapping::SymLog => RewardMapping::SymLog,
+                    },
+                    artifacts_path,
+                    true,
+                )?;
 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             } else {
-                let mut memory = UniformReplayMemory::new(
-                    2usize.pow(20),
-                    args.batch_size,
-                    args.n_step,
-                    args.bellman_gamma,
-                )?;
+                let mut memory = UniformReplayMemory::new(2usize.pow(20), args.batch_size)?;
 
-                let trainer =
-                    UniformReplayTrainer::new(10000, args.bellman_gamma, artifacts_path, true)?;
+                let trainer = UniformReplayTrainer::new(
+                    10000,
+                    args.bellman_gamma,
+                    args.n_step,
+                    match args.revenue_mapping {
+                        RevenueMapping::Identity => RewardMapping::Identity,
+                        RevenueMapping::Clip => RewardMapping::Clip {
+                            min: -1.0,
+                            max: 1.0,
+                        },
+                        RevenueMapping::Rescaling => RewardMapping::Rescaling { epsilon: 0.001 },
+                        RevenueMapping::SymLog => RewardMapping::SymLog,
+                    },
+                    artifacts_path,
+                    true,
+                )?;
 
                 trainer.train_loop(&mut agent, env, &mut memory, &random_policy)?;
             }

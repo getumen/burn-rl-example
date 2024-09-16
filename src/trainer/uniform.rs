@@ -20,11 +20,13 @@ use tempfile::TempDir;
 
 use crate::{Action, ActionSpace, Agent, Env, Experience, State};
 
-use super::{NStepExperience, RandomPolicy};
+use super::{NStepExperience, RandomPolicy, RewardMapping};
 
 pub struct UniformReplayTrainer {
     episode: usize,
     gamma: f32,
+    n_step: usize,
+    rewards_mapping: RewardMapping,
     artifacts_dir: PathBuf,
     render: bool,
 }
@@ -33,6 +35,8 @@ impl UniformReplayTrainer {
     pub fn new(
         episode: usize,
         gamma: f32,
+        n_step: usize,
+        rewards_mapping: RewardMapping,
         artifacts_dir: PathBuf,
         render: bool,
     ) -> anyhow::Result<Self> {
@@ -40,6 +44,8 @@ impl UniformReplayTrainer {
         Ok(Self {
             episode,
             gamma,
+            n_step,
+            rewards_mapping,
             artifacts_dir,
             render,
         })
@@ -52,6 +58,9 @@ impl UniformReplayTrainer {
         memory: &mut UniformReplayMemory<S>,
         random_policy: &Option<RandomPolicy>,
     ) -> anyhow::Result<()> {
+        let mut n_step_experiences =
+            NStepExperience::new(self.n_step, self.gamma, self.rewards_mapping.clone());
+
         for epi in 0..self.episode {
             let mut step = 0;
             let mut cumulative_reward = 0.0;
@@ -107,13 +116,16 @@ impl UniformReplayTrainer {
                     reward,
                     is_done,
                 };
-                memory.push(experience)?;
+
+                if let Some(experience) = n_step_experiences.push(experience)? {
+                    memory.push(experience)?;
+                }
 
                 if epi == 0 {
                     continue;
                 }
                 if let Ok(batch) = memory.sample() {
-                    let weights = vec![1.0 / batch.len() as f32; batch.len()];
+                    let weights = vec![1.0; batch.len()];
                     agent.update(self.gamma, &batch, &weights)?;
                 }
             }
@@ -126,7 +138,6 @@ impl UniformReplayTrainer {
 pub struct UniformReplayMemory<S: State + Serialize + DeserializeOwned + 'static> {
     _buffer_dir: TempDir,
     buffer: Arc<DBWithThreadMode<MultiThreaded>>,
-    nstep_experiences: NStepExperience<S>,
     max_buffer_size: usize,
     counter: Arc<AtomicUsize>,
     batch_channel: Receiver<Vec<Experience<S>>>,
@@ -140,12 +151,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> Drop for UniformReplayMe
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
-    pub fn new(
-        max_buffer_size: usize,
-        batch_size: usize,
-        n_step: usize,
-        gamma: f32,
-    ) -> anyhow::Result<Self> {
+    pub fn new(max_buffer_size: usize, batch_size: usize) -> anyhow::Result<Self> {
         let dir = TempDir::new()?;
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -200,7 +206,6 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
         Ok(Self {
             _buffer_dir: dir,
             buffer,
-            nstep_experiences: NStepExperience::new(n_step, gamma),
             max_buffer_size,
             counter,
             batch_channel: rx,
@@ -209,13 +214,6 @@ impl<S: State + Serialize + DeserializeOwned + 'static> UniformReplayMemory<S> {
     }
 
     fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
-        let experience = self.nstep_experiences.push(experience)?;
-        let experience = if let Some(v) = experience {
-            v
-        } else {
-            return Ok(());
-        };
-
         let value = rmp_serde::to_vec(&experience)?;
         let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.max_buffer_size;
         self.buffer.put(index.to_le_bytes(), value)?;
