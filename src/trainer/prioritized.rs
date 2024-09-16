@@ -9,11 +9,13 @@ use std::{
     },
     thread::JoinHandle,
     time::Duration,
+    vec,
 };
 
 use crate::{Action, ActionSpace, Env, Experience, PrioritizedReplayAgent, State};
 
 use anyhow::Context as _;
+use itertools::Itertools;
 use parking_lot::RwLock;
 use rand::Rng as _;
 use rocksdb::{DBCompressionType, DBWithThreadMode, MultiThreaded, Options};
@@ -21,11 +23,13 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::json;
 use tempfile::TempDir;
 
-use super::{NStepExperience, RandomPolicy};
+use super::{NStepExperience, RandomPolicy, RewardMapping};
 
 pub struct PrioritizedReplayTrainer {
     episode: usize,
     gamma: f32,
+    n_step: usize,
+    rewards_mapping: RewardMapping,
     artifacts_dir: PathBuf,
     render: bool,
 }
@@ -34,6 +38,8 @@ impl PrioritizedReplayTrainer {
     pub fn new(
         episode: usize,
         gamma: f32,
+        n_step: usize,
+        rewards_mapping: RewardMapping,
         artifacts_dir: PathBuf,
         render: bool,
     ) -> anyhow::Result<Self> {
@@ -41,6 +47,8 @@ impl PrioritizedReplayTrainer {
         Ok(Self {
             episode,
             gamma,
+            n_step,
+            rewards_mapping,
             artifacts_dir,
             render,
         })
@@ -53,6 +61,9 @@ impl PrioritizedReplayTrainer {
         memory: &mut PrioritizedReplayMemory<S>,
         random_policy: &Option<RandomPolicy>,
     ) -> anyhow::Result<()> {
+        let mut n_step_experiences =
+            NStepExperience::new(self.n_step, self.gamma, self.rewards_mapping.clone());
+
         for epi in 0..self.episode {
             let mut step = 0;
             let mut cumulative_reward = 0.0;
@@ -109,7 +120,11 @@ impl PrioritizedReplayTrainer {
                     is_done,
                 };
 
-                memory.push(experience)?;
+                if let Some(experience) = n_step_experiences.push(experience)? {
+                    let experiences = vec![experience.clone()];
+                    let td_errors = agent.temporaral_difference_error(self.gamma, &experiences)?;
+                    memory.push(experience, td_errors[0])?;
+                }
 
                 if epi == 0 {
                     continue;
@@ -143,12 +158,9 @@ pub struct PrioritizedReplayMemory<S: State + Serialize + DeserializeOwned + 'st
     _buffer_dir: TempDir,
     buffer: Arc<DBWithThreadMode<MultiThreaded>>,
     priorities: Arc<RwLock<SumTree>>,
-    nstep_experiences: NStepExperience<S>,
     max_buffer_size: usize,
     counter: Arc<AtomicUsize>,
     alpha: f32,
-
-    max_priority: f32,
 
     batch_channel: Receiver<PrioritizedBatch<S>>,
     _samplers: Vec<JoinHandle<()>>,
@@ -161,13 +173,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> Drop for PrioritizedRepl
 }
 
 impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<S> {
-    pub fn new(
-        max_buffer_size: usize,
-        batch_size: usize,
-        n_step: usize,
-        alpha: f32,
-        gamma: f32,
-    ) -> anyhow::Result<Self> {
+    pub fn new(max_buffer_size: usize, batch_size: usize, alpha: f32) -> anyhow::Result<Self> {
         let dir = TempDir::new()?;
         let mut opts = Options::default();
         opts.create_if_missing(true);
@@ -202,6 +208,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
                         let mut indexes = Vec::with_capacity(batch_size);
                         let mut experiences = Vec::with_capacity(batch_size);
                         let mut weights = Vec::with_capacity(batch_size);
+                        let counter = counter_clone.load(Ordering::Relaxed);
                         for (index, weight) in priorities {
                             let experience =
                                 if let Some(v) = buffer_clone.get(index.to_le_bytes()).unwrap() {
@@ -214,6 +221,14 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
                             experiences.push(experience);
                             weights.push(weight);
                         }
+                        let weights = weights
+                            .into_iter()
+                            .map(|f| {
+                                (1.0 / f).powf((counter as f32 / max_buffer_size as f32).tanh())
+                            })
+                            .collect_vec();
+                        let max_weight = weights.iter().copied().fold(0.0, f32::max);
+                        let weights = weights.into_iter().map(|x| x / max_weight).collect();
                         (indexes, experiences, weights)
                     };
                     tx_clone
@@ -232,11 +247,9 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
             _buffer_dir: dir,
             buffer,
             priorities,
-            nstep_experiences: NStepExperience::new(n_step, gamma),
             max_buffer_size,
             counter,
             alpha,
-            max_priority: 1.0,
             batch_channel: rx,
             _samplers,
         })
@@ -244,22 +257,14 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
 
     pub fn update_priorities(&mut self, indexes: Vec<usize>, td_errors: Vec<f32>) {
         for (index, td_error) in indexes.iter().zip(td_errors) {
-            self.max_priority = self.max_priority.max(td_error);
             let priority = (td_error + 0.001).powf(self.alpha);
             let mut priorities = self.priorities.write();
             priorities.set(*index, priority);
         }
     }
 
-    fn push(&mut self, experience: Experience<S>) -> anyhow::Result<()> {
-        let experience = self.nstep_experiences.push(experience)?;
-        let experience = if let Some(v) = experience {
-            v
-        } else {
-            return Ok(());
-        };
-
-        let priority = (self.max_priority + 0.001).powf(self.alpha);
+    fn push(&mut self, experience: Experience<S>, td_error: f32) -> anyhow::Result<()> {
+        let priority = (td_error + 0.001).powf(self.alpha);
         let index = self.counter.fetch_add(1, Ordering::Relaxed) % self.max_buffer_size;
         let value = rmp_serde::to_vec(&experience)?;
 
@@ -324,7 +329,10 @@ impl SumTree {
                 cur = left;
             }
         }
-        (cur - self.capacity, self.data[cur])
+        (
+            cur - self.capacity,
+            self.data[cur] / max * self.capacity as f32,
+        )
     }
 }
 

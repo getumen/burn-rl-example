@@ -10,6 +10,7 @@ use burn::{
     data::dataloader::batcher::Batcher,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
+    nn::loss::{HuberLossConfig, MseLoss},
     optim::{
         adaptor::OptimizerAdaptor,
         record::{AdaptorRecord, AdaptorRecordItem},
@@ -20,6 +21,8 @@ use burn::{
     tensor::{backend::AutodiffBackend, ElementConversion, Shape, Tensor, TensorData},
 };
 
+use super::LossFunction;
+
 #[derive(Debug, Config)]
 pub struct CategoricalDeepQNetworkAgentConfig {
     teacher_update_freq: usize,
@@ -27,6 +30,7 @@ pub struct CategoricalDeepQNetworkAgentConfig {
     double_dqn: bool,
     min_value: f32,
     max_value: f32,
+    loss_function: LossFunction,
 }
 
 #[derive(Clone)]
@@ -128,15 +132,26 @@ where
         };
         let next_target_q_value: Tensor<B, 2> =
             Tensor::from_inner(next_target_q_value).to_device(&self.device);
+
+        let targets = next_target_q_value
+            .clone()
+            .inner()
+            .mul_scalar(gamma.powi(self.config.n_step as i32))
+            * (item.done.ones_like().inner() - item.done.clone().inner())
+            + item.reward.clone().inner();
+
         let targets = q_value.clone().inner()
             * (item.action.ones_like().inner() - item.action.clone().inner())
-            + ((next_target_q_value.clone().inner()
-                * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.config.n_step as i32))
-                + item.reward.clone().inner())
-                * item.action.clone().inner();
-        let td: Vec<f32> = (q_value.inner() - targets)
-            .abs()
+            + targets * item.action.clone().inner();
+
+        let td = match self.config.loss_function {
+            LossFunction::Huber => HuberLossConfig::new(1.0)
+                .init()
+                .forward_no_reduction(q_value.inner(), targets),
+            LossFunction::Squared => MseLoss::new().forward_no_reduction(q_value.inner(), targets),
+        };
+
+        let td: Vec<f32> = td
             .sum_dim(1)
             .into_data()
             .to_vec()

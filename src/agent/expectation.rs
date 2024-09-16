@@ -6,7 +6,7 @@ use burn::{
     data::dataloader::batcher::Batcher,
     lr_scheduler::LrScheduler,
     module::{AutodiffModule, ParamId},
-    nn::loss::HuberLossConfig,
+    nn::loss::{HuberLossConfig, MseLoss},
     optim::{
         adaptor::OptimizerAdaptor,
         record::{AdaptorRecord, AdaptorRecordItem},
@@ -21,11 +21,14 @@ use crate::{
     Experience, ObservationSpace, PrioritizedReplay, PrioritizedReplayAgent,
 };
 
+use super::LossFunction;
+
 #[derive(Debug, Config)]
 pub struct DeepQNetworkAgentConfig {
     teacher_update_freq: usize,
     n_step: usize,
     double_dqn: bool,
+    loss_function: LossFunction,
 }
 
 #[derive(Clone)]
@@ -128,9 +131,11 @@ where
             Tensor::from_inner(next_target_q_value).to_device(&self.device);
         let targets = q_value.clone().inner()
             * (item.action.ones_like().inner() - item.action.clone().inner())
-            + ((next_target_q_value.clone().inner()
-                * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.config.n_step as i32))
+            + (next_target_q_value
+                .clone()
+                .inner()
+                .mul_scalar(gamma.powi(self.config.n_step as i32))
+                * (item.done.ones_like().inner() - item.done.clone().inner())
                 + item.reward.clone().inner())
                 * item.action.clone().inner();
         let td: Vec<f32> = (q_value.inner() - targets)
@@ -205,17 +210,20 @@ where
                 }
             }
         };
+        let targets = (next_target_q_value.clone().inner()
+            * (item.done.ones_like().inner() - item.done.clone().inner()))
+        .mul_scalar(gamma.powi(self.config.n_step as i32))
+            + item.reward.clone().inner();
         let targets = q_value.clone().inner()
             * (item.action.ones_like().inner() - item.action.clone().inner())
-            + ((next_target_q_value.clone().inner()
-                * (item.done.ones_like().inner() - item.done.clone().inner()))
-            .mul_scalar(gamma.powi(self.config.n_step as i32))
-                + item.reward.clone().inner())
-                * item.action.clone().inner();
+            + targets * item.action.clone().inner();
         let targets = Tensor::from_inner(targets);
-        let loss = HuberLossConfig::new(1.0)
-            .init()
-            .forward_no_reduction(q_value, targets);
+        let loss = match self.config.loss_function {
+            LossFunction::Huber => HuberLossConfig::new(1.0)
+                .init()
+                .forward_no_reduction(q_value, targets),
+            LossFunction::Squared => MseLoss::new().forward_no_reduction(q_value, targets),
+        };
         let weights = Tensor::from_data(
             TensorData::new(weights.to_vec(), Shape::new([weights.len(), 1]))
                 .convert::<B::FloatElem>(),
