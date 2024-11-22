@@ -224,7 +224,7 @@ impl<S: State + Serialize + DeserializeOwned + 'static> PrioritizedReplayMemory<
                         let weights = weights
                             .into_iter()
                             .map(|f| {
-                                f.powf(counter.min(self.max_buffer_size) as f32 / self.max_buffer_size as f32)
+                                (1.0 / f).powf((counter as f32 / max_buffer_size as f32).tanh())
                             })
                             .collect_vec();
                         let max_weight = weights.iter().copied().fold(0.0, f32::max);
